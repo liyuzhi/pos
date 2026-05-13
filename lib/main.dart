@@ -17,7 +17,6 @@ class KeyboardManager {
   static const _defaultSuppressDuration = Duration(milliseconds: 500);
 
   DateTime? _autoShowSuppressedUntil;
-  Future<void>? _hideInFlight;
   _KeyboardIntent _latestIntent = _KeyboardIntent.hide;
   int _intentGeneration = 0;
 
@@ -68,7 +67,7 @@ class KeyboardManager {
 
     if (_latestIntent == _KeyboardIntent.hide &&
         generation != _intentGeneration) {
-      await _hideKeyboardNow();
+      await _hideKeyboardNow(_intentGeneration);
     }
   }
 
@@ -87,19 +86,10 @@ class KeyboardManager {
       FocusManager.instance.primaryFocus?.unfocus();
     }
 
-    final currentHide = _hideInFlight ?? _hideKeyboardNow();
-    _hideInFlight = currentHide;
-
-    try {
-      await currentHide;
-    } finally {
-      if (identical(_hideInFlight, currentHide)) {
-        _hideInFlight = null;
-      }
-    }
+    await _hideKeyboardNow(_intentGeneration);
   }
 
-  Future<void> _hideKeyboardNow() async {
+  Future<void> _hideKeyboardNow(int generation) async {
     try {
       /// Flutter层隐藏
       await SystemChannels.textInput.invokeMethod('TextInput.hide');
@@ -109,20 +99,25 @@ class KeyboardManager {
     } catch (_) {}
 
     if (!Platform.isWindows) return;
-    if (_latestIntent != _KeyboardIntent.hide) return;
+    if (!_isCurrentHide(generation)) return;
 
     try {
       /// 等待focus detach完成
       await Future.delayed(const Duration(milliseconds: 80));
-      if (_latestIntent != _KeyboardIntent.hide) return;
+      if (!_isCurrentHide(generation)) return;
 
       _WindowsTouchKeyboardApi.instance.closeTouchKeyboard();
       await Future.delayed(const Duration(milliseconds: 80));
-      if (_latestIntent != _KeyboardIntent.hide) return;
+      if (!_isCurrentHide(generation)) return;
 
       /// 兜底关闭TabTip启动器进程；可见键盘窗口优先由user32关闭。
       await Process.run('taskkill', ['/IM', 'TabTip.exe', '/F']);
     } catch (_) {}
+  }
+
+  bool _isCurrentHide(int generation) {
+    return _latestIntent == _KeyboardIntent.hide &&
+        _intentGeneration == generation;
   }
 }
 
@@ -373,7 +368,6 @@ class _PosPageState extends State<PosPage> {
                 content: SmartTextField(
                   controller: dialogController,
                   hintText: '搜索商品',
-                  touchKeyboardEnabled: false,
                   onChanged: (value) {
                     debugPrint('搜索内容: $value');
                   },
