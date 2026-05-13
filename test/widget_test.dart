@@ -7,6 +7,8 @@ void main() {
     await tester.pumpWidget(const MyApp());
 
     expect(find.text('Flutter Windows POS'), findsOneWidget);
+    expect(find.text('测试输入框A'), findsOneWidget);
+    expect(find.text('测试输入框B'), findsOneWidget);
     expect(find.text('打开Dialog'), findsOneWidget);
     expect(find.text('手动关闭键盘'), findsOneWidget);
     expect(find.text('点击这里不会再乱弹触摸键盘'), findsOneWidget);
@@ -24,6 +26,22 @@ void main() {
     await tester.pump();
 
     expect(tester.testTextInput.isVisible, isFalse);
+  });
+
+  testWidgets('tap input A then input B keeps text input usable', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MyApp());
+
+    await tester.tap(find.text('测试输入框A'));
+    await tester.pump();
+
+    expect(tester.testTextInput.isVisible, isTrue);
+
+    await tester.tap(find.text('测试输入框B'));
+    await tester.pump();
+
+    expect(tester.testTextInput.isVisible, isTrue);
   });
 
   testWidgets('dialog open and close do not leave text input visible', (

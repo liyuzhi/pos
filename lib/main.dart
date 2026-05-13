@@ -318,6 +318,8 @@ class PosPage extends StatefulWidget {
 
 class _PosPageState extends State<PosPage> {
   final searchController = TextEditingController();
+  final testAController = TextEditingController();
+  final testBController = TextEditingController();
   final _keyboardDismissFocusNode = FocusNode(
     debugLabel: 'keyboardDismissFocusNode',
     skipTraversal: true,
@@ -406,6 +408,8 @@ class _PosPageState extends State<PosPage> {
   @override
   void dispose() {
     searchController.dispose();
+    testAController.dispose();
+    testBController.dispose();
     _keyboardDismissFocusNode.dispose();
     super.dispose();
   }
@@ -424,7 +428,7 @@ class _PosPageState extends State<PosPage> {
 
         child: Scaffold(
           appBar: AppBar(title: const Text('Flutter Windows POS')),
-          body: Padding(
+          body: SingleChildScrollView(
             padding: const EdgeInsets.all(20),
             child: Column(
               children: [
@@ -433,6 +437,26 @@ class _PosPageState extends State<PosPage> {
                   hintText: '搜索商品',
                   onChanged: (value) {
                     debugPrint('搜索内容: $value');
+                  },
+                ),
+
+                const SizedBox(height: 20),
+
+                SmartTextField(
+                  controller: testAController,
+                  hintText: '测试输入框A',
+                  onChanged: (value) {
+                    debugPrint('测试输入框A: $value');
+                  },
+                ),
+
+                const SizedBox(height: 20),
+
+                SmartTextField(
+                  controller: testBController,
+                  hintText: '测试输入框B',
+                  onChanged: (value) {
+                    debugPrint('测试输入框B: $value');
                   },
                 ),
 
