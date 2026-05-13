@@ -1,30 +1,46 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flutter_application_1/main.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
+  testWidgets('renders POS keyboard controls', (tester) async {
     await tester.pumpWidget(const MyApp());
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    expect(find.text('Flutter Windows POS'), findsOneWidget);
+    expect(find.text('打开Dialog'), findsOneWidget);
+    expect(find.text('手动关闭键盘'), findsOneWidget);
+    expect(find.text('点击这里不会再乱弹触摸键盘'), findsOneWidget);
+  });
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
+  testWidgets('tap outside clears text input focus', (tester) async {
+    await tester.pumpWidget(const MyApp());
+
+    await tester.tap(find.byType(SmartTextField));
     await tester.pump();
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    expect(tester.testTextInput.isVisible, isTrue);
+
+    await tester.tap(find.text('点击这里不会再乱弹触摸键盘'));
+    await tester.pump();
+
+    expect(tester.testTextInput.isVisible, isFalse);
+  });
+
+  testWidgets('dialog open and close do not leave text input visible', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MyApp());
+
+    await tester.tap(find.text('打开Dialog'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('测试弹框'), findsOneWidget);
+    expect(tester.testTextInput.isVisible, isFalse);
+
+    await tester.tap(find.text('关闭'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('测试弹框'), findsNothing);
+    expect(tester.testTextInput.isVisible, isFalse);
   });
 }
