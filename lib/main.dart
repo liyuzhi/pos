@@ -12,32 +12,103 @@ class KeyboardManager {
 
   static final instance = KeyboardManager._();
 
+  static const _defaultSuppressDuration = Duration(milliseconds: 500);
+
+  DateTime? _autoShowSuppressedUntil;
+  Future<void>? _hideInFlight;
+  _KeyboardIntent _latestIntent = _KeyboardIntent.hide;
+  int _intentGeneration = 0;
+
+  bool get _isAutoShowSuppressed {
+    final suppressedUntil = _autoShowSuppressedUntil;
+    if (suppressedUntil == null) return false;
+    if (DateTime.now().isBefore(suppressedUntil)) return true;
+
+    _autoShowSuppressedUntil = null;
+    return false;
+  }
+
+  /// 在路由切换或手动收起键盘时短暂禁止自动弹起，防止焦点恢复导致乱弹。
+  void suppressAutoShow([
+    Duration duration = _defaultSuppressDuration,
+  ]) {
+    _autoShowSuppressedUntil = DateTime.now().add(duration);
+    _markIntent(_KeyboardIntent.hide);
+  }
+
+  int _markIntent(_KeyboardIntent intent) {
+    _latestIntent = intent;
+    _intentGeneration += 1;
+    return _intentGeneration;
+  }
+
   /// 打开Windows触摸键盘
-  Future<void> showKeyboard() async {
+  Future<void> showKeyboard({bool force = false}) async {
     if (!Platform.isWindows) return;
+    if (!force && _isAutoShowSuppressed) {
+      _markIntent(_KeyboardIntent.hide);
+      return;
+    }
+    if (force) {
+      _autoShowSuppressedUntil = null;
+    }
+
+    final generation = _markIntent(_KeyboardIntent.show);
 
     try {
-      await Process.run(
+      await SystemChannels.textInput.invokeMethod('TextInput.show');
+      await Process.start(
         r'C:\Program Files\Common Files\microsoft shared\ink\TabTip.exe',
-        [],
+        const [],
+        mode: ProcessStartMode.detached,
       );
     } catch (_) {}
+
+    if (_latestIntent == _KeyboardIntent.hide &&
+        generation != _intentGeneration) {
+      await _hideKeyboardNow();
+    }
   }
 
   /// 真正关闭Windows触摸键盘
-  Future<void> hideKeyboard() async {
-    if (!Platform.isWindows) return;
+  Future<void> hideKeyboard({
+    bool clearFocus = true,
+    bool suppressAutoShow = false,
+  }) async {
+    if (suppressAutoShow) {
+      this.suppressAutoShow();
+    } else {
+      _markIntent(_KeyboardIntent.hide);
+    }
+
+    if (clearFocus) {
+      FocusManager.instance.primaryFocus?.unfocus();
+    }
+
+    final currentHide = _hideInFlight ?? _hideKeyboardNow();
+    _hideInFlight = currentHide;
 
     try {
-      /// 关闭焦点
-      FocusManager.instance.primaryFocus?.unfocus();
+      await currentHide;
+    } finally {
+      if (identical(_hideInFlight, currentHide)) {
+        _hideInFlight = null;
+      }
+    }
+  }
 
+  Future<void> _hideKeyboardNow() async {
+    try {
       /// Flutter层隐藏
       await SystemChannels.textInput.invokeMethod('TextInput.hide');
 
       /// 清理Flutter TextInputClient
       await SystemChannels.textInput.invokeMethod('TextInput.clearClient');
+    } catch (_) {}
 
+    if (!Platform.isWindows) return;
+
+    try {
       /// 等待focus detach完成
       await Future.delayed(const Duration(milliseconds: 80));
 
@@ -46,6 +117,8 @@ class KeyboardManager {
     } catch (_) {}
   }
 }
+
+enum _KeyboardIntent { show, hide }
 
 class SmartTextField extends StatefulWidget {
   const SmartTextField({
@@ -70,8 +143,7 @@ class SmartTextField extends StatefulWidget {
 
 class _SmartTextFieldState extends State<SmartTextField> {
   late FocusNode _focusNode;
-
-  bool _isProcessingFocus = false;
+  int _focusGeneration = 0;
 
   @override
   void initState() {
@@ -83,22 +155,21 @@ class _SmartTextFieldState extends State<SmartTextField> {
   }
 
   Future<void> _handleFocusChanged() async {
-    if (_isProcessingFocus) return;
+    final generation = ++_focusGeneration;
 
-    _isProcessingFocus = true;
+    /// 获取焦点
+    if (_focusNode.hasFocus) {
+      await KeyboardManager.instance.showKeyboard();
+      if (!mounted || generation != _focusGeneration) return;
 
-    try {
-      /// 获取焦点
-      if (_focusNode.hasFocus) {
-        await KeyboardManager.instance.showKeyboard();
+      if (!_focusNode.hasFocus) {
+        await KeyboardManager.instance.hideKeyboard(clearFocus: false);
       }
-      /// 失去焦点
-      else {
-        await KeyboardManager.instance.hideKeyboard();
-      }
-    } finally {
-      _isProcessingFocus = false;
+      return;
     }
+
+    /// 失去焦点
+    await KeyboardManager.instance.hideKeyboard(clearFocus: false);
   }
 
   @override
@@ -122,6 +193,8 @@ class _SmartTextFieldState extends State<SmartTextField> {
         hintText: widget.hintText,
         border: const OutlineInputBorder(),
       ),
+      onTap: () => KeyboardManager.instance.showKeyboard(force: true),
+      onTapOutside: (_) => _focusNode.unfocus(),
       onChanged: widget.onChanged,
       onFieldSubmitted: widget.onSubmitted,
     );
@@ -149,12 +222,21 @@ class PosPage extends StatefulWidget {
 
 class _PosPageState extends State<PosPage> {
   final searchController = TextEditingController();
+  final _keyboardDismissFocusNode = FocusNode(
+    debugLabel: 'keyboardDismissFocusNode',
+    skipTraversal: true,
+  );
 
   /// 全局关闭焦点+键盘
   Future<void> _hideAllKeyboard() async {
+    KeyboardManager.instance.suppressAutoShow();
     FocusManager.instance.primaryFocus?.unfocus();
 
-    await KeyboardManager.instance.hideKeyboard();
+    if (mounted) {
+      _keyboardDismissFocusNode.requestFocus();
+    }
+
+    await KeyboardManager.instance.hideKeyboard(suppressAutoShow: true);
   }
 
   /// Dialog前先清理输入上下文（非常关键）
@@ -163,83 +245,109 @@ class _PosPageState extends State<PosPage> {
 
     if (!mounted) return;
 
-    await showDialog(
-      context: context,
-      builder: (_) {
-        return AlertDialog(
-          title: const Text('测试弹框'),
-          content: SmartTextField(
-            controller: TextEditingController(),
-            hintText: '搜索商品',
-            onChanged: (value) {
-              debugPrint('搜索内容: $value');
-            },
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
+    final dialogController = TextEditingController();
+
+    try {
+      await showDialog(
+        context: context,
+        requestFocus: false,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: const Text('测试弹框'),
+            content: SmartTextField(
+              controller: dialogController,
+              hintText: '搜索商品',
+              onChanged: (value) {
+                debugPrint('搜索内容: $value');
               },
-              child: const Text('关闭'),
             ),
-          ],
-        );
-      },
-    );
+            actions: [
+              TextButton(
+                onPressed: () async {
+                  KeyboardManager.instance.suppressAutoShow();
+                  await KeyboardManager.instance.hideKeyboard(
+                    suppressAutoShow: true,
+                  );
+
+                  if (!dialogContext.mounted) return;
+                  Navigator.of(dialogContext).pop();
+                },
+                child: const Text('关闭'),
+              ),
+            ],
+          );
+        },
+      );
+    } finally {
+      dialogController.dispose();
+      if (mounted) {
+        await _hideAllKeyboard();
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    searchController.dispose();
+    _keyboardDismissFocusNode.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      behavior: HitTestBehavior.translucent,
+    return Focus(
+      focusNode: _keyboardDismissFocusNode,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
 
-      /// 点击空白关闭键盘
-      onTap: () async {
-        await _hideAllKeyboard();
-      },
+        /// 点击空白关闭键盘
+        onTap: () async {
+          await _hideAllKeyboard();
+        },
 
-      child: Scaffold(
-        appBar: AppBar(title: const Text('Flutter Windows POS')),
-        body: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            children: [
-              SmartTextField(
-                controller: searchController,
-                hintText: '搜索商品',
-                onChanged: (value) {
-                  debugPrint('搜索内容: $value');
-                },
-              ),
+        child: Scaffold(
+          appBar: AppBar(title: const Text('Flutter Windows POS')),
+          body: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              children: [
+                SmartTextField(
+                  controller: searchController,
+                  hintText: '搜索商品',
+                  onChanged: (value) {
+                    debugPrint('搜索内容: $value');
+                  },
+                ),
 
-              const SizedBox(height: 20),
+                const SizedBox(height: 20),
 
-              ElevatedButton(
-                onPressed: () async {
-                  await _showTestDialog();
-                },
-                child: const Text('打开Dialog'),
-              ),
+                ElevatedButton(
+                  onPressed: () async {
+                    await _showTestDialog();
+                  },
+                  child: const Text('打开Dialog'),
+                ),
 
-              const SizedBox(height: 20),
+                const SizedBox(height: 20),
 
-              ElevatedButton(
-                onPressed: () async {
-                  await _hideAllKeyboard();
-                },
-                child: const Text('手动关闭键盘'),
-              ),
+                ElevatedButton(
+                  onPressed: () async {
+                    await _hideAllKeyboard();
+                  },
+                  child: const Text('手动关闭键盘'),
+                ),
 
-              const SizedBox(height: 20),
+                const SizedBox(height: 20),
 
-              Container(
-                height: 200,
-                width: double.infinity,
-                color: Colors.grey.shade200,
-                alignment: Alignment.center,
-                child: const Text('点击这里不会再乱弹触摸键盘'),
-              ),
-            ],
+                Container(
+                  height: 200,
+                  width: double.infinity,
+                  color: Colors.grey.shade200,
+                  alignment: Alignment.center,
+                  child: const Text('点击这里不会再乱弹触摸键盘'),
+                ),
+              ],
+            ),
           ),
         ),
       ),
