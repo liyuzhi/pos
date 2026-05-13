@@ -75,9 +75,10 @@ class KeyboardManager {
   Future<void> hideKeyboard({
     bool clearFocus = true,
     bool suppressAutoShow = false,
+    Duration? suppressDuration,
   }) async {
     if (suppressAutoShow) {
-      this.suppressAutoShow();
+      this.suppressAutoShow(suppressDuration ?? _defaultSuppressDuration);
     } else {
       _markIntent(_KeyboardIntent.hide);
     }
@@ -256,12 +257,16 @@ class _SmartTextFieldState extends State<SmartTextField> {
 
   @override
   void dispose() {
+    if (_focusNode.hasFocus) {
+      KeyboardManager.instance.hideKeyboard(
+        clearFocus: false,
+        suppressAutoShow: true,
+      );
+    }
+
     _focusNode.removeListener(_handleFocusChanged);
 
     _focusNode.dispose();
-
-    /// 防止dispose后仍存在输入上下文
-    SystemChannels.textInput.invokeMethod('TextInput.clearClient');
 
     super.dispose();
   }
@@ -317,6 +322,8 @@ class PosPage extends StatefulWidget {
 }
 
 class _PosPageState extends State<PosPage> {
+  static const _routeKeyboardSuppressDuration = Duration(milliseconds: 1200);
+
   final searchController = TextEditingController();
   final testAController = TextEditingController();
   final testBController = TextEditingController();
@@ -326,15 +333,21 @@ class _PosPageState extends State<PosPage> {
   );
 
   /// 全局关闭焦点+键盘
-  Future<void> _hideAllKeyboard() async {
-    KeyboardManager.instance.suppressAutoShow();
+  Future<void> _hideAllKeyboard({
+    Duration suppressDuration = KeyboardManager._defaultSuppressDuration,
+  }) async {
+    KeyboardManager.instance.suppressAutoShow(suppressDuration);
     FocusManager.instance.primaryFocus?.unfocus();
 
     if (mounted) {
       _keyboardDismissFocusNode.requestFocus();
     }
 
-    await KeyboardManager.instance.hideKeyboard(suppressAutoShow: true);
+    await Future<void>.delayed(Duration.zero);
+    await KeyboardManager.instance.hideKeyboard(
+      suppressAutoShow: true,
+      suppressDuration: suppressDuration,
+    );
   }
 
   /// Dialog前先清理输入上下文（非常关键）
@@ -349,11 +362,16 @@ class _PosPageState extends State<PosPage> {
       skipTraversal: true,
     );
 
-    Future<void> hideDialogKeyboard() async {
+    Future<void> hideDialogKeyboard({
+      Duration suppressDuration = KeyboardManager._defaultSuppressDuration,
+    }) async {
+      FocusManager.instance.primaryFocus?.unfocus();
       dialogFocusNode.requestFocus();
+      await Future<void>.delayed(Duration.zero);
       await KeyboardManager.instance.hideKeyboard(
         clearFocus: false,
         suppressAutoShow: true,
+        suppressDuration: suppressDuration,
       );
     }
 
@@ -381,9 +399,8 @@ class _PosPageState extends State<PosPage> {
               actions: [
                 TextButton(
                   onPressed: () async {
-                    KeyboardManager.instance.suppressAutoShow();
-                    await KeyboardManager.instance.hideKeyboard(
-                      suppressAutoShow: true,
+                    await hideDialogKeyboard(
+                      suppressDuration: _routeKeyboardSuppressDuration,
                     );
 
                     if (!dialogContext.mounted) return;
@@ -400,7 +417,9 @@ class _PosPageState extends State<PosPage> {
       dialogController.dispose();
       dialogFocusNode.dispose();
       if (mounted) {
-        await _hideAllKeyboard();
+        await _hideAllKeyboard(
+          suppressDuration: _routeKeyboardSuppressDuration,
+        );
       }
     }
   }

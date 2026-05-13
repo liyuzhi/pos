@@ -81,4 +81,29 @@ void main() {
 
     expect(tester.testTextInput.isVisible, isTrue);
   });
+
+  testWidgets('closing dialog while input focused hides text input', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MyApp());
+
+    await tester.tap(find.text('打开Dialog'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byType(SmartTextField).last);
+    await tester.pump();
+
+    expect(tester.testTextInput.isVisible, isTrue);
+
+    await tester.tap(find.text('关闭'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('测试弹框'), findsNothing);
+    expect(tester.testTextInput.isVisible, isFalse);
+
+    await tester.tap(find.text('测试输入框A'));
+    await tester.pump();
+
+    expect(tester.testTextInput.isVisible, isTrue);
+  });
 }
