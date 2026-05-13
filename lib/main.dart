@@ -54,9 +54,10 @@ class KeyboardManager {
 
     try {
       await SystemChannels.textInput.invokeMethod('TextInput.show');
-      await Process.run(
+      await Process.start(
         r'C:\Program Files\Common Files\microsoft shared\ink\TabTip.exe',
-        [],
+        const [],
+        mode: ProcessStartMode.detached,
       );
     } catch (_) {}
 
