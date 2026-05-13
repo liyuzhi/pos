@@ -57,5 +57,10 @@ void main() {
 
     expect(find.text('测试弹框'), findsNothing);
     expect(tester.testTextInput.isVisible, isFalse);
+
+    await tester.tap(find.byType(SmartTextField).first);
+    await tester.pump();
+
+    expect(tester.testTextInput.isVisible, isTrue);
   });
 }

@@ -93,6 +93,7 @@ class KeyboardManager {
     try {
       /// Flutter层隐藏
       await SystemChannels.textInput.invokeMethod('TextInput.hide');
+      if (!_isCurrentHide(generation)) return;
 
       /// 清理Flutter TextInputClient
       await SystemChannels.textInput.invokeMethod('TextInput.clearClient');
@@ -346,6 +347,14 @@ class _PosPageState extends State<PosPage> {
       skipTraversal: true,
     );
 
+    Future<void> hideDialogKeyboard() async {
+      dialogFocusNode.requestFocus();
+      await KeyboardManager.instance.hideKeyboard(
+        clearFocus: false,
+        suppressAutoShow: true,
+      );
+    }
+
     try {
       await showDialog(
         context: context,
@@ -354,39 +363,33 @@ class _PosPageState extends State<PosPage> {
           return Focus(
             focusNode: dialogFocusNode,
             autofocus: true,
-            child: Listener(
-              behavior: HitTestBehavior.translucent,
-              onPointerDown: (_) {
-                dialogFocusNode.requestFocus();
-                KeyboardManager.instance.hideKeyboard(
-                  clearFocus: false,
-                  suppressAutoShow: true,
-                );
-              },
-              child: AlertDialog(
-                title: const Text('测试弹框'),
-                content: SmartTextField(
-                  controller: dialogController,
-                  hintText: '搜索商品',
-                  onChanged: (value) {
-                    debugPrint('搜索内容: $value');
-                  },
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () async {
-                      KeyboardManager.instance.suppressAutoShow();
-                      await KeyboardManager.instance.hideKeyboard(
-                        suppressAutoShow: true,
-                      );
-
-                      if (!dialogContext.mounted) return;
-                      Navigator.of(dialogContext).pop();
-                    },
-                    child: const Text('关闭'),
-                  ),
-                ],
+            child: AlertDialog(
+              title: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: hideDialogKeyboard,
+                child: const Text('测试弹框'),
               ),
+              content: SmartTextField(
+                controller: dialogController,
+                hintText: '搜索商品',
+                onChanged: (value) {
+                  debugPrint('搜索内容: $value');
+                },
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () async {
+                    KeyboardManager.instance.suppressAutoShow();
+                    await KeyboardManager.instance.hideKeyboard(
+                      suppressAutoShow: true,
+                    );
+
+                    if (!dialogContext.mounted) return;
+                    Navigator.of(dialogContext).pop();
+                  },
+                  child: const Text('关闭'),
+                ),
+              ],
             ),
           );
         },
