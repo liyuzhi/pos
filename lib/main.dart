@@ -1,5 +1,7 @@
+import 'dart:ffi' as ffi;
 import 'dart:io';
 
+import 'package:ffi/ffi.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -107,18 +109,91 @@ class KeyboardManager {
     } catch (_) {}
 
     if (!Platform.isWindows) return;
+    if (_latestIntent != _KeyboardIntent.hide) return;
 
     try {
       /// 等待focus detach完成
       await Future.delayed(const Duration(milliseconds: 80));
+      if (_latestIntent != _KeyboardIntent.hide) return;
 
-      /// 强制关闭Windows触摸键盘
+      _WindowsTouchKeyboardApi.instance.closeTouchKeyboard();
+      await Future.delayed(const Duration(milliseconds: 80));
+      if (_latestIntent != _KeyboardIntent.hide) return;
+
+      /// 兜底关闭TabTip启动器进程；可见键盘窗口优先由user32关闭。
       await Process.run('taskkill', ['/IM', 'TabTip.exe', '/F']);
     } catch (_) {}
   }
 }
 
 enum _KeyboardIntent { show, hide }
+
+typedef _FindWindowWNative =
+    ffi.IntPtr Function(ffi.Pointer<Utf16>, ffi.Pointer<Utf16>);
+typedef _FindWindowW = int Function(ffi.Pointer<Utf16>, ffi.Pointer<Utf16>);
+typedef _PostMessageWNative =
+    ffi.Int32 Function(ffi.IntPtr, ffi.Uint32, ffi.IntPtr, ffi.IntPtr);
+typedef _PostMessageW = int Function(int, int, int, int);
+
+class _WindowsTouchKeyboardApi {
+  _WindowsTouchKeyboardApi._();
+
+  static final instance = _WindowsTouchKeyboardApi._();
+
+  static const _touchKeyboardWindowClass = 'IPTip_Main_Window';
+  static const _wmSysCommand = 0x0112;
+  static const _scClose = 0xF060;
+
+  ffi.DynamicLibrary? _user32;
+  _FindWindowW? _findWindowW;
+  _PostMessageW? _postMessageW;
+
+  bool closeTouchKeyboard() {
+    if (!Platform.isWindows) return false;
+
+    try {
+      final findWindowW = _findWindowW ??= _lookupFindWindowW();
+      final postMessageW = _postMessageW ??= _lookupPostMessageW();
+      final className = _touchKeyboardWindowClass.toNativeUtf16();
+
+      try {
+        final keyboardWindow = findWindowW(
+          className,
+          ffi.nullptr.cast<Utf16>(),
+        );
+        if (keyboardWindow == 0) return false;
+
+        return postMessageW(
+              keyboardWindow,
+              _wmSysCommand,
+              _scClose,
+              0,
+            ) !=
+            0;
+      } finally {
+        malloc.free(className);
+      }
+    } catch (_) {
+      return false;
+    }
+  }
+
+  _FindWindowW _lookupFindWindowW() {
+    return _loadUser32().lookupFunction<_FindWindowWNative, _FindWindowW>(
+      'FindWindowW',
+    );
+  }
+
+  _PostMessageW _lookupPostMessageW() {
+    return _loadUser32().lookupFunction<_PostMessageWNative, _PostMessageW>(
+      'PostMessageW',
+    );
+  }
+
+  ffi.DynamicLibrary _loadUser32() {
+    return _user32 ??= ffi.DynamicLibrary.open('user32.dll');
+  }
+}
 
 class SmartTextField extends StatefulWidget {
   const SmartTextField({
@@ -194,7 +269,10 @@ class _SmartTextFieldState extends State<SmartTextField> {
         border: const OutlineInputBorder(),
       ),
       onTap: () => KeyboardManager.instance.showKeyboard(force: true),
-      onTapOutside: (_) => _focusNode.unfocus(),
+      onTapOutside: (_) {
+        _focusNode.unfocus();
+        KeyboardManager.instance.hideKeyboard(clearFocus: false);
+      },
       onChanged: widget.onChanged,
       onFieldSubmitted: widget.onSubmitted,
     );
