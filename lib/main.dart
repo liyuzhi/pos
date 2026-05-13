@@ -43,11 +43,14 @@ class KeyboardManager {
   }
 
   /// 打开Windows触摸键盘
-  Future<void> showKeyboard() async {
+  Future<void> showKeyboard({bool force = false}) async {
     if (!Platform.isWindows) return;
-    if (_isAutoShowSuppressed) {
+    if (!force && _isAutoShowSuppressed) {
       _markIntent(_KeyboardIntent.hide);
       return;
+    }
+    if (force) {
+      _autoShowSuppressedUntil = null;
     }
 
     final generation = _markIntent(_KeyboardIntent.show);
@@ -190,7 +193,7 @@ class _SmartTextFieldState extends State<SmartTextField> {
         hintText: widget.hintText,
         border: const OutlineInputBorder(),
       ),
-      onTap: KeyboardManager.instance.showKeyboard,
+      onTap: () => KeyboardManager.instance.showKeyboard(force: true),
       onTapOutside: (_) => _focusNode.unfocus(),
       onChanged: widget.onChanged,
       onFieldSubmitted: widget.onSubmitted,
