@@ -202,6 +202,7 @@ class SmartTextField extends StatefulWidget {
     this.hintText,
     this.onChanged,
     this.onSubmitted,
+    this.touchKeyboardEnabled = true,
   });
 
   final TextEditingController controller;
@@ -211,6 +212,8 @@ class SmartTextField extends StatefulWidget {
   final ValueChanged<String>? onChanged;
 
   final ValueChanged<String>? onSubmitted;
+
+  final bool touchKeyboardEnabled;
 
   @override
   State<SmartTextField> createState() => _SmartTextFieldState();
@@ -234,6 +237,14 @@ class _SmartTextFieldState extends State<SmartTextField> {
 
     /// 获取焦点
     if (_focusNode.hasFocus) {
+      if (!widget.touchKeyboardEnabled) {
+        await KeyboardManager.instance.hideKeyboard(
+          clearFocus: false,
+          suppressAutoShow: true,
+        );
+        return;
+      }
+
       await KeyboardManager.instance.showKeyboard();
       if (!mounted || generation != _focusGeneration) return;
 
@@ -264,11 +275,22 @@ class _SmartTextFieldState extends State<SmartTextField> {
     return TextFormField(
       controller: widget.controller,
       focusNode: _focusNode,
+      keyboardType: widget.touchKeyboardEnabled ? null : TextInputType.none,
       decoration: InputDecoration(
         hintText: widget.hintText,
         border: const OutlineInputBorder(),
       ),
-      onTap: () => KeyboardManager.instance.showKeyboard(force: true),
+      onTap: () {
+        if (widget.touchKeyboardEnabled) {
+          KeyboardManager.instance.showKeyboard(force: true);
+          return;
+        }
+
+        KeyboardManager.instance.hideKeyboard(
+          clearFocus: false,
+          suppressAutoShow: true,
+        );
+      },
       onTapOutside: (_) {
         _focusNode.unfocus();
         KeyboardManager.instance.hideKeyboard(clearFocus: false);
@@ -324,40 +346,60 @@ class _PosPageState extends State<PosPage> {
     if (!mounted) return;
 
     final dialogController = TextEditingController();
+    final dialogFocusNode = FocusNode(
+      debugLabel: 'dialogKeyboardDismissFocusNode',
+      skipTraversal: true,
+    );
 
     try {
       await showDialog(
         context: context,
         requestFocus: false,
         builder: (dialogContext) {
-          return AlertDialog(
-            title: const Text('测试弹框'),
-            content: SmartTextField(
-              controller: dialogController,
-              hintText: '搜索商品',
-              onChanged: (value) {
-                debugPrint('搜索内容: $value');
+          return Focus(
+            focusNode: dialogFocusNode,
+            autofocus: true,
+            child: Listener(
+              behavior: HitTestBehavior.translucent,
+              onPointerDown: (_) {
+                dialogFocusNode.requestFocus();
+                KeyboardManager.instance.hideKeyboard(
+                  clearFocus: false,
+                  suppressAutoShow: true,
+                );
               },
-            ),
-            actions: [
-              TextButton(
-                onPressed: () async {
-                  KeyboardManager.instance.suppressAutoShow();
-                  await KeyboardManager.instance.hideKeyboard(
-                    suppressAutoShow: true,
-                  );
+              child: AlertDialog(
+                title: const Text('测试弹框'),
+                content: SmartTextField(
+                  controller: dialogController,
+                  hintText: '搜索商品',
+                  touchKeyboardEnabled: false,
+                  onChanged: (value) {
+                    debugPrint('搜索内容: $value');
+                  },
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () async {
+                      KeyboardManager.instance.suppressAutoShow();
+                      await KeyboardManager.instance.hideKeyboard(
+                        suppressAutoShow: true,
+                      );
 
-                  if (!dialogContext.mounted) return;
-                  Navigator.of(dialogContext).pop();
-                },
-                child: const Text('关闭'),
+                      if (!dialogContext.mounted) return;
+                      Navigator.of(dialogContext).pop();
+                    },
+                    child: const Text('关闭'),
+                  ),
+                ],
               ),
-            ],
+            ),
           );
         },
       );
     } finally {
       dialogController.dispose();
+      dialogFocusNode.dispose();
       if (mounted) {
         await _hideAllKeyboard();
       }

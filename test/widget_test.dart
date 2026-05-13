@@ -37,6 +37,16 @@ void main() {
     expect(find.text('测试弹框'), findsOneWidget);
     expect(tester.testTextInput.isVisible, isFalse);
 
+    await tester.tap(find.text('测试弹框'));
+    await tester.pump();
+
+    expect(tester.testTextInput.isVisible, isFalse);
+
+    await tester.tap(find.byType(SmartTextField).last);
+    await tester.pump();
+
+    expect(tester.testTextInput.isVisible, isFalse);
+
     await tester.tap(find.text('关闭'));
     await tester.pumpAndSettle();
 
