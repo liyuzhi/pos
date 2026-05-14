@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ffi' as ffi;
 import 'dart:io';
 
@@ -29,6 +30,20 @@ class WindowsWindowController {
     if (!Platform.isWindows) return false;
     return await _channel.invokeMethod<bool>('isFullscreen') ?? false;
   }
+
+  Future<Rect?> getWindowRect() async {
+    if (!Platform.isWindows) return null;
+
+    final rect = await _channel.invokeMethod<List<dynamic>>('getWindowRect');
+    if (rect == null || rect.length != 4) return null;
+
+    return Rect.fromLTRB(
+      (rect[0] as int).toDouble(),
+      (rect[1] as int).toDouble(),
+      (rect[2] as int).toDouble(),
+      (rect[3] as int).toDouble(),
+    );
+  }
 }
 
 class KeyboardManager {
@@ -38,8 +53,11 @@ class KeyboardManager {
 
   static const _defaultSuppressDuration = Duration(milliseconds: 500);
 
+  final bottomInset = ValueNotifier<double>(0);
+
   DateTime? _autoShowSuppressedUntil;
   Future<void>? _activeHide;
+  Timer? _keyboardInsetTimer;
   _KeyboardIntent _latestIntent = _KeyboardIntent.hide;
   int _intentGeneration = 0;
 
@@ -88,6 +106,16 @@ class KeyboardManager {
       );
     } catch (_) {}
 
+    if (_latestIntent == _KeyboardIntent.show &&
+        generation == _intentGeneration) {
+      await Future.delayed(const Duration(milliseconds: 300));
+      if (_latestIntent == _KeyboardIntent.show &&
+          generation == _intentGeneration) {
+        await refreshKeyboardInset();
+        _startKeyboardInsetPolling();
+      }
+    }
+
     if (_latestIntent == _KeyboardIntent.hide &&
         generation != _intentGeneration) {
       await _hideKeyboardNow(_intentGeneration);
@@ -100,6 +128,9 @@ class KeyboardManager {
     bool suppressAutoShow = false,
     Duration? suppressDuration,
   }) async {
+    bottomInset.value = 0;
+    _stopKeyboardInsetPolling();
+
     if (suppressAutoShow) {
       this.suppressAutoShow(suppressDuration ?? _defaultSuppressDuration);
     } else {
@@ -124,6 +155,42 @@ class KeyboardManager {
 
   Future<void> waitForPendingHide() async {
     await _activeHide;
+  }
+
+  Future<void> refreshKeyboardInset() async {
+    if (!Platform.isWindows) {
+      bottomInset.value = 0;
+      return;
+    }
+
+    final appRect = await WindowsWindowController.instance.getWindowRect();
+    if (appRect == null) {
+      bottomInset.value = 0;
+      return;
+    }
+
+    bottomInset.value =
+        _WindowsTouchKeyboardApi.instance.dockedBottomInsetFor(appRect);
+  }
+
+  void _startKeyboardInsetPolling() {
+    _keyboardInsetTimer?.cancel();
+    _keyboardInsetTimer = Timer.periodic(
+      const Duration(milliseconds: 500),
+      (_) async {
+        if (_latestIntent != _KeyboardIntent.show) {
+          _stopKeyboardInsetPolling();
+          return;
+        }
+
+        await refreshKeyboardInset();
+      },
+    );
+  }
+
+  void _stopKeyboardInsetPolling() {
+    _keyboardInsetTimer?.cancel();
+    _keyboardInsetTimer = null;
   }
 
   Future<void> _hideKeyboardNow(int generation) async {
@@ -167,6 +234,25 @@ typedef _FindWindowW = int Function(ffi.Pointer<Utf16>, ffi.Pointer<Utf16>);
 typedef _PostMessageWNative =
     ffi.Int32 Function(ffi.IntPtr, ffi.Uint32, ffi.IntPtr, ffi.IntPtr);
 typedef _PostMessageW = int Function(int, int, int, int);
+typedef _GetWindowRectNative =
+    ffi.Int32 Function(ffi.IntPtr, ffi.Pointer<_NativeRect>);
+typedef _GetWindowRect = int Function(int, ffi.Pointer<_NativeRect>);
+typedef _IsWindowVisibleNative = ffi.Int32 Function(ffi.IntPtr);
+typedef _IsWindowVisible = int Function(int);
+
+final class _NativeRect extends ffi.Struct {
+  @ffi.Int32()
+  external int left;
+
+  @ffi.Int32()
+  external int top;
+
+  @ffi.Int32()
+  external int right;
+
+  @ffi.Int32()
+  external int bottom;
+}
 
 class _WindowsTouchKeyboardApi {
   _WindowsTouchKeyboardApi._();
@@ -180,6 +266,8 @@ class _WindowsTouchKeyboardApi {
   ffi.DynamicLibrary? _user32;
   _FindWindowW? _findWindowW;
   _PostMessageW? _postMessageW;
+  _GetWindowRect? _getWindowRect;
+  _IsWindowVisible? _isWindowVisible;
 
   bool closeTouchKeyboard() {
     if (!Platform.isWindows) return false;
@@ -211,6 +299,76 @@ class _WindowsTouchKeyboardApi {
     }
   }
 
+  double dockedBottomInsetFor(Rect appRect) {
+    final keyboardRect = getTouchKeyboardRect();
+    if (keyboardRect == null) return 0;
+
+    final horizontalOverlap =
+        _overlap(appRect.left, appRect.right, keyboardRect.left,
+            keyboardRect.right);
+    if (horizontalOverlap <= 0 || appRect.width <= 0) return 0;
+
+    final widthRatio = horizontalOverlap / appRect.width;
+    final bottomGap = (appRect.bottom - keyboardRect.bottom).abs();
+    final overlapsBottom = keyboardRect.top < appRect.bottom &&
+        keyboardRect.bottom > appRect.top &&
+        keyboardRect.top >= appRect.top;
+
+    // Floating/split keyboards are narrower or not docked to the bottom edge.
+    // They should not reserve global bottom space.
+    if (widthRatio < 0.6 || bottomGap > 96 || !overlapsBottom) return 0;
+
+    final inset = appRect.bottom - keyboardRect.top;
+    if (inset <= 0) return 0;
+    return inset + 20;
+  }
+
+  Rect? getTouchKeyboardRect() {
+    if (!Platform.isWindows) return null;
+
+    try {
+      final findWindowW = _findWindowW ??= _lookupFindWindowW();
+      final isWindowVisible = _isWindowVisible ??= _lookupIsWindowVisible();
+      final getWindowRect = _getWindowRect ??= _lookupGetWindowRect();
+      final className = _touchKeyboardWindowClass.toNativeUtf16();
+
+      try {
+        final keyboardWindow = findWindowW(
+          className,
+          ffi.nullptr.cast<Utf16>(),
+        );
+        if (keyboardWindow == 0 || isWindowVisible(keyboardWindow) == 0) {
+          return null;
+        }
+
+        final rectPointer = malloc<_NativeRect>();
+        try {
+          if (getWindowRect(keyboardWindow, rectPointer) == 0) return null;
+
+          final rect = rectPointer.ref;
+          return Rect.fromLTRB(
+            rect.left.toDouble(),
+            rect.top.toDouble(),
+            rect.right.toDouble(),
+            rect.bottom.toDouble(),
+          );
+        } finally {
+          malloc.free(rectPointer);
+        }
+      } finally {
+        malloc.free(className);
+      }
+    } catch (_) {
+      return null;
+    }
+  }
+
+  double _overlap(double aStart, double aEnd, double bStart, double bEnd) {
+    final start = aStart > bStart ? aStart : bStart;
+    final end = aEnd < bEnd ? aEnd : bEnd;
+    return end > start ? end - start : 0;
+  }
+
   _FindWindowW _lookupFindWindowW() {
     return _loadUser32().lookupFunction<_FindWindowWNative, _FindWindowW>(
       'FindWindowW',
@@ -220,6 +378,19 @@ class _WindowsTouchKeyboardApi {
   _PostMessageW _lookupPostMessageW() {
     return _loadUser32().lookupFunction<_PostMessageWNative, _PostMessageW>(
       'PostMessageW',
+    );
+  }
+
+  _GetWindowRect _lookupGetWindowRect() {
+    return _loadUser32().lookupFunction<_GetWindowRectNative, _GetWindowRect>(
+      'GetWindowRect',
+    );
+  }
+
+  _IsWindowVisible _lookupIsWindowVisible() {
+    return _loadUser32().lookupFunction<_IsWindowVisibleNative,
+        _IsWindowVisible>(
+      'IsWindowVisible',
     );
   }
 
@@ -403,7 +574,7 @@ class PosPage extends StatefulWidget {
 
 class _PosPageState extends State<PosPage> {
   static const _routeKeyboardSuppressDuration = Duration(milliseconds: 1200);
-  static const _keyboardAvoidanceBottomPadding = 380.0;
+  static const _pagePadding = 20.0;
   static const _externalInputCount = 12;
   static const _dialogInputCount = 12;
 
@@ -570,8 +741,16 @@ class _PosPageState extends State<PosPage> {
                       child: const SizedBox.shrink(),
                     ),
                     Expanded(
-                      child: SingleChildScrollView(
-                        padding: const EdgeInsets.only(bottom: 360),
+                      child: ValueListenableBuilder<double>(
+                        valueListenable: KeyboardManager.instance.bottomInset,
+                        builder: (context, keyboardInset, child) {
+                          return SingleChildScrollView(
+                            padding: EdgeInsets.only(
+                              bottom: _pagePadding + keyboardInset,
+                            ),
+                            child: child,
+                          );
+                        },
                         child: Column(
                           children: [
                             for (var index = 0;
@@ -683,13 +862,19 @@ class _PosPageState extends State<PosPage> {
                 focusNode: _keyboardDismissFocusNode,
                 child: const SizedBox.shrink(),
               ),
-              SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(
-                  20,
-                  20,
-                  20,
-                  _keyboardAvoidanceBottomPadding,
-                ),
+              ValueListenableBuilder<double>(
+                valueListenable: KeyboardManager.instance.bottomInset,
+                builder: (context, keyboardInset, child) {
+                  return SingleChildScrollView(
+                    padding: EdgeInsets.fromLTRB(
+                      _pagePadding,
+                      _pagePadding,
+                      _pagePadding,
+                      _pagePadding + keyboardInset,
+                    ),
+                    child: child,
+                  );
+                },
                 child: Column(
                   children: [
                     SmartTextField(

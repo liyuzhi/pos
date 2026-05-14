@@ -94,6 +94,22 @@ void FlutterWindow::RegisterWindowMethodChannel() {
           result->Success(flutter::EncodableValue(is_fullscreen_));
           return;
         }
+        if (call.method_name() == "getWindowRect") {
+          RECT rect;
+          if (!GetWindowRect(GetHandle(), &rect)) {
+            result->Success(flutter::EncodableValue());
+            return;
+          }
+
+          flutter::EncodableList rect_value = {
+              flutter::EncodableValue(static_cast<int>(rect.left)),
+              flutter::EncodableValue(static_cast<int>(rect.top)),
+              flutter::EncodableValue(static_cast<int>(rect.right)),
+              flutter::EncodableValue(static_cast<int>(rect.bottom)),
+          };
+          result->Success(flutter::EncodableValue(rect_value));
+          return;
+        }
 
         result->NotImplemented();
       });
