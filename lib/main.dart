@@ -17,6 +17,7 @@ class KeyboardManager {
   static const _defaultSuppressDuration = Duration(milliseconds: 500);
 
   DateTime? _autoShowSuppressedUntil;
+  Future<void>? _activeHide;
   _KeyboardIntent _latestIntent = _KeyboardIntent.hide;
   int _intentGeneration = 0;
 
@@ -87,7 +88,20 @@ class KeyboardManager {
       FocusManager.instance.primaryFocus?.unfocus();
     }
 
-    await _hideKeyboardNow(_intentGeneration);
+    final hideFuture = _hideKeyboardNow(_intentGeneration);
+    _activeHide = hideFuture;
+
+    try {
+      await hideFuture;
+    } finally {
+      if (identical(_activeHide, hideFuture)) {
+        _activeHide = null;
+      }
+    }
+  }
+
+  Future<void> waitForPendingHide() async {
+    await _activeHide;
   }
 
   Future<void> _hideKeyboardNow(int generation) async {
@@ -201,6 +215,7 @@ class SmartTextField extends StatefulWidget {
     this.onSubmitted,
     this.touchKeyboardEnabled = true,
     this.focusNode,
+    this.onFocusLost,
   });
 
   final TextEditingController controller;
@@ -214,6 +229,8 @@ class SmartTextField extends StatefulWidget {
   final bool touchKeyboardEnabled;
 
   final FocusNode? focusNode;
+
+  final VoidCallback? onFocusLost;
 
   @override
   State<SmartTextField> createState() => _SmartTextFieldState();
@@ -273,6 +290,7 @@ class _SmartTextFieldState extends State<SmartTextField> {
     }
 
     /// 失去焦点
+    widget.onFocusLost?.call();
     await KeyboardManager.instance.hideKeyboard(clearFocus: false);
   }
 
@@ -316,8 +334,9 @@ class _SmartTextFieldState extends State<SmartTextField> {
         );
       },
       onTapOutside: (_) {
-        _focusNode.unfocus();
-        KeyboardManager.instance.hideKeyboard(clearFocus: false);
+        _focusNode.unfocus(
+          disposition: UnfocusDisposition.scope,
+        );
       },
       onChanged: widget.onChanged,
       onFieldSubmitted: widget.onSubmitted,
@@ -360,7 +379,9 @@ class _PosPageState extends State<PosPage> {
     Duration suppressDuration = KeyboardManager._defaultSuppressDuration,
   }) async {
     KeyboardManager.instance.suppressAutoShow(suppressDuration);
-    FocusManager.instance.primaryFocus?.unfocus();
+    FocusManager.instance.primaryFocus?.unfocus(
+      disposition: UnfocusDisposition.scope,
+    );
 
     if (mounted) {
       _keyboardDismissFocusNode.requestFocus();
@@ -368,6 +389,7 @@ class _PosPageState extends State<PosPage> {
 
     await Future<void>.delayed(Duration.zero);
     await KeyboardManager.instance.hideKeyboard(
+      clearFocus: false,
       suppressAutoShow: true,
       suppressDuration: suppressDuration,
     );
@@ -385,10 +407,9 @@ class _PosPageState extends State<PosPage> {
       skipTraversal: true,
     );
     final dialogInputFocusNode = FocusNode(debugLabel: 'dialogInputFocusNode');
+    var dialogInputHideStarted = false;
 
-    Future<void> hideDialogKeyboard({
-      BuildContext? focusContext,
-      Duration suppressDuration = KeyboardManager._defaultSuppressDuration,
+    Future<void> moveDialogFocusToSink({
       bool lockInputFocus = false,
     }) async {
       if (lockInputFocus) {
@@ -396,17 +417,30 @@ class _PosPageState extends State<PosPage> {
       }
 
       dialogInputFocusNode.unfocus(disposition: UnfocusDisposition.scope);
-      FocusManager.instance.primaryFocus?.unfocus();
-      if (focusContext?.mounted ?? false) {
-        FocusScope.of(focusContext!).requestFocus(dialogFocusNode);
-      } else {
-        dialogFocusNode.requestFocus();
-      }
+      FocusManager.instance.primaryFocus?.unfocus(
+        disposition: UnfocusDisposition.scope,
+      );
+      dialogFocusNode.requestFocus();
       await Future<void>.delayed(Duration.zero);
-      await KeyboardManager.instance.hideKeyboard(
-        clearFocus: false,
-        suppressAutoShow: true,
-        suppressDuration: suppressDuration,
+    }
+
+    Future<void> hideDialogKeyboard({
+      Duration suppressDuration = KeyboardManager._defaultSuppressDuration,
+    }) async {
+      await moveDialogFocusToSink();
+
+      if (dialogInputHideStarted) {
+        await KeyboardManager.instance.waitForPendingHide();
+      } else {
+        await KeyboardManager.instance.hideKeyboard(
+          clearFocus: false,
+          suppressAutoShow: true,
+          suppressDuration: suppressDuration,
+        );
+      }
+
+      KeyboardManager.instance.suppressAutoShow(
+        suppressDuration,
       );
     }
 
@@ -415,39 +449,59 @@ class _PosPageState extends State<PosPage> {
         context: context,
         requestFocus: false,
         builder: (dialogContext) {
-          return Focus(
-            focusNode: dialogFocusNode,
-            autofocus: true,
-            child: AlertDialog(
-              title: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () => hideDialogKeyboard(focusContext: dialogContext),
-                child: const Text('测试弹框'),
-              ),
-              content: SmartTextField(
-                controller: dialogController,
-                focusNode: dialogInputFocusNode,
-                hintText: '搜索商品',
-                onChanged: (value) {
-                  debugPrint('搜索内容: $value');
-                },
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () async {
-                    await hideDialogKeyboard(
-                      focusContext: dialogContext,
-                      suppressDuration: _routeKeyboardSuppressDuration,
-                      lockInputFocus: true,
-                    );
-
-                    if (!dialogContext.mounted) return;
-                    Navigator.of(dialogContext).pop();
+          return AlertDialog(
+            title: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => hideDialogKeyboard(),
+              child: const Text('测试弹框'),
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Focus(
+                  focusNode: dialogFocusNode,
+                  child: const SizedBox.shrink(),
+                ),
+                SmartTextField(
+                  controller: dialogController,
+                  focusNode: dialogInputFocusNode,
+                  hintText: '搜索商品',
+                  onFocusLost: () {
+                    dialogInputHideStarted = true;
                   },
-                  child: const Text('关闭'),
+                  onChanged: (value) {
+                    debugPrint('搜索内容: $value');
+                  },
                 ),
               ],
             ),
+            actions: [
+              TextButton(
+                onPressed: () async {
+                  await moveDialogFocusToSink(
+                    lockInputFocus: true,
+                  );
+
+                  if (dialogInputHideStarted) {
+                    await KeyboardManager.instance.waitForPendingHide();
+                  } else {
+                    await KeyboardManager.instance.hideKeyboard(
+                      clearFocus: false,
+                      suppressAutoShow: true,
+                      suppressDuration: _routeKeyboardSuppressDuration,
+                    );
+                  }
+
+                  KeyboardManager.instance.suppressAutoShow(
+                    _routeKeyboardSuppressDuration,
+                  );
+
+                  if (!dialogContext.mounted) return;
+                  Navigator.of(dialogContext).pop();
+                },
+                child: const Text('关闭'),
+              ),
+            ],
           );
         },
       );
@@ -456,21 +510,13 @@ class _PosPageState extends State<PosPage> {
       dialogInputFocusNode.dispose();
       dialogFocusNode.dispose();
       if (mounted) {
-        await _hideAllKeyboard(
-          suppressDuration: _routeKeyboardSuppressDuration,
+        KeyboardManager.instance.suppressAutoShow(
+          _routeKeyboardSuppressDuration,
         );
-        await Future<void>.delayed(const Duration(milliseconds: 250));
-      }
-      if (mounted) {
-        await _hideAllKeyboard(
-          suppressDuration: _routeKeyboardSuppressDuration,
+        FocusManager.instance.primaryFocus?.unfocus(
+          disposition: UnfocusDisposition.scope,
         );
-        await Future<void>.delayed(const Duration(milliseconds: 350));
-      }
-      if (mounted) {
-        await _hideAllKeyboard(
-          suppressDuration: _routeKeyboardSuppressDuration,
-        );
+        _keyboardDismissFocusNode.requestFocus();
       }
     }
   }
@@ -486,9 +532,7 @@ class _PosPageState extends State<PosPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Focus(
-      focusNode: _keyboardDismissFocusNode,
-      child: GestureDetector(
+    return GestureDetector(
         behavior: HitTestBehavior.translucent,
 
         /// 点击空白关闭键盘
@@ -498,70 +542,77 @@ class _PosPageState extends State<PosPage> {
 
         child: Scaffold(
           appBar: AppBar(title: const Text('Flutter Windows POS')),
-          body: SingleChildScrollView(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              children: [
-                SmartTextField(
-                  controller: searchController,
-                  hintText: '搜索商品',
-                  onChanged: (value) {
-                    debugPrint('搜索内容: $value');
-                  },
+          body: Stack(
+            children: [
+              Focus(
+                focusNode: _keyboardDismissFocusNode,
+                child: const SizedBox.shrink(),
+              ),
+              SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  children: [
+                    SmartTextField(
+                      controller: searchController,
+                      hintText: '搜索商品',
+                      onChanged: (value) {
+                        debugPrint('搜索内容: $value');
+                      },
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    SmartTextField(
+                      controller: testAController,
+                      hintText: '测试输入框A',
+                      onChanged: (value) {
+                        debugPrint('测试输入框A: $value');
+                      },
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    SmartTextField(
+                      controller: testBController,
+                      hintText: '测试输入框B',
+                      onChanged: (value) {
+                        debugPrint('测试输入框B: $value');
+                      },
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    ElevatedButton(
+                      onPressed: () async {
+                        await _showTestDialog();
+                      },
+                      child: const Text('打开Dialog'),
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    ElevatedButton(
+                      onPressed: () async {
+                        await _hideAllKeyboard();
+                      },
+                      child: const Text('手动关闭键盘'),
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    Container(
+                      height: 200,
+                      width: double.infinity,
+                      color: Colors.grey.shade200,
+                      alignment: Alignment.center,
+                      child: const Text('点击这里不会再乱弹触摸键盘'),
+                    ),
+                  ],
                 ),
-
-                const SizedBox(height: 20),
-
-                SmartTextField(
-                  controller: testAController,
-                  hintText: '测试输入框A',
-                  onChanged: (value) {
-                    debugPrint('测试输入框A: $value');
-                  },
-                ),
-
-                const SizedBox(height: 20),
-
-                SmartTextField(
-                  controller: testBController,
-                  hintText: '测试输入框B',
-                  onChanged: (value) {
-                    debugPrint('测试输入框B: $value');
-                  },
-                ),
-
-                const SizedBox(height: 20),
-
-                ElevatedButton(
-                  onPressed: () async {
-                    await _showTestDialog();
-                  },
-                  child: const Text('打开Dialog'),
-                ),
-
-                const SizedBox(height: 20),
-
-                ElevatedButton(
-                  onPressed: () async {
-                    await _hideAllKeyboard();
-                  },
-                  child: const Text('手动关闭键盘'),
-                ),
-
-                const SizedBox(height: 20),
-
-                Container(
-                  height: 200,
-                  width: double.infinity,
-                  color: Colors.grey.shade200,
-                  alignment: Alignment.center,
-                  child: const Text('点击这里不会再乱弹触摸键盘'),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
-      ),
     );
   }
 }
