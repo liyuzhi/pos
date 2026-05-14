@@ -200,6 +200,7 @@ class SmartTextField extends StatefulWidget {
     this.onChanged,
     this.onSubmitted,
     this.touchKeyboardEnabled = true,
+    this.focusNode,
   });
 
   final TextEditingController controller;
@@ -212,20 +213,40 @@ class SmartTextField extends StatefulWidget {
 
   final bool touchKeyboardEnabled;
 
+  final FocusNode? focusNode;
+
   @override
   State<SmartTextField> createState() => _SmartTextFieldState();
 }
 
 class _SmartTextFieldState extends State<SmartTextField> {
   late FocusNode _focusNode;
+  late bool _ownsFocusNode;
   int _focusGeneration = 0;
 
   @override
   void initState() {
     super.initState();
 
-    _focusNode = FocusNode();
+    _ownsFocusNode = widget.focusNode == null;
+    _focusNode = widget.focusNode ?? FocusNode();
 
+    _focusNode.addListener(_handleFocusChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant SmartTextField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.focusNode == widget.focusNode) return;
+
+    _focusNode.removeListener(_handleFocusChanged);
+    if (_ownsFocusNode) {
+      _focusNode.dispose();
+    }
+
+    _ownsFocusNode = widget.focusNode == null;
+    _focusNode = widget.focusNode ?? FocusNode();
     _focusNode.addListener(_handleFocusChanged);
   }
 
@@ -266,7 +287,9 @@ class _SmartTextFieldState extends State<SmartTextField> {
 
     _focusNode.removeListener(_handleFocusChanged);
 
-    _focusNode.dispose();
+    if (_ownsFocusNode) {
+      _focusNode.dispose();
+    }
 
     super.dispose();
   }
@@ -361,12 +384,24 @@ class _PosPageState extends State<PosPage> {
       debugLabel: 'dialogKeyboardDismissFocusNode',
       skipTraversal: true,
     );
+    final dialogInputFocusNode = FocusNode(debugLabel: 'dialogInputFocusNode');
 
     Future<void> hideDialogKeyboard({
+      BuildContext? focusContext,
       Duration suppressDuration = KeyboardManager._defaultSuppressDuration,
+      bool lockInputFocus = false,
     }) async {
+      if (lockInputFocus) {
+        dialogInputFocusNode.canRequestFocus = false;
+      }
+
+      dialogInputFocusNode.unfocus(disposition: UnfocusDisposition.scope);
       FocusManager.instance.primaryFocus?.unfocus();
-      dialogFocusNode.requestFocus();
+      if (focusContext?.mounted ?? false) {
+        FocusScope.of(focusContext!).requestFocus(dialogFocusNode);
+      } else {
+        dialogFocusNode.requestFocus();
+      }
       await Future<void>.delayed(Duration.zero);
       await KeyboardManager.instance.hideKeyboard(
         clearFocus: false,
@@ -386,11 +421,12 @@ class _PosPageState extends State<PosPage> {
             child: AlertDialog(
               title: GestureDetector(
                 behavior: HitTestBehavior.opaque,
-                onTap: hideDialogKeyboard,
+                onTap: () => hideDialogKeyboard(focusContext: dialogContext),
                 child: const Text('测试弹框'),
               ),
               content: SmartTextField(
                 controller: dialogController,
+                focusNode: dialogInputFocusNode,
                 hintText: '搜索商品',
                 onChanged: (value) {
                   debugPrint('搜索内容: $value');
@@ -400,7 +436,9 @@ class _PosPageState extends State<PosPage> {
                 TextButton(
                   onPressed: () async {
                     await hideDialogKeyboard(
+                      focusContext: dialogContext,
                       suppressDuration: _routeKeyboardSuppressDuration,
+                      lockInputFocus: true,
                     );
 
                     if (!dialogContext.mounted) return;
@@ -415,7 +453,20 @@ class _PosPageState extends State<PosPage> {
       );
     } finally {
       dialogController.dispose();
+      dialogInputFocusNode.dispose();
       dialogFocusNode.dispose();
+      if (mounted) {
+        await _hideAllKeyboard(
+          suppressDuration: _routeKeyboardSuppressDuration,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+      if (mounted) {
+        await _hideAllKeyboard(
+          suppressDuration: _routeKeyboardSuppressDuration,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+      }
       if (mounted) {
         await _hideAllKeyboard(
           suppressDuration: _routeKeyboardSuppressDuration,
