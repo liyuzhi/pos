@@ -16,32 +16,36 @@ class WindowsWindowController {
   static final instance = WindowsWindowController._();
   static const _channel = MethodChannel('pos/window');
 
+  /// 调用 Windows runner 将当前窗口切换为无边框全屏。
   Future<bool> enterFullscreen() async {
     if (!Platform.isWindows) return false;
     return await _channel.invokeMethod<bool>('enterFullscreen') ?? false;
   }
 
+  /// 恢复进入全屏前保存的窗口样式和位置。
   Future<bool> exitFullscreen() async {
     if (!Platform.isWindows) return false;
     return await _channel.invokeMethod<bool>('exitFullscreen') ?? false;
   }
 
+  /// Flutter 层启动时同步一次原生窗口全屏状态，避免按钮状态错误。
   Future<bool> isFullscreen() async {
     if (!Platform.isWindows) return false;
     return await _channel.invokeMethod<bool>('isFullscreen') ?? false;
   }
 
+  /// 返回 Windows 物理屏幕坐标下的应用窗口矩形，用于和触摸键盘矩形求交。
   Future<Rect?> getWindowRect() async {
     if (!Platform.isWindows) return null;
 
-    final rect = await _channel.invokeMethod<List<dynamic>>('getWindowRect');
-    if (rect == null || rect.length != 4) return null;
+    final rect = await _channel.invokeMethod<dynamic>('getWindowRect');
+    if (rect is! List || rect.length != 4) return null;
 
     return Rect.fromLTRB(
-      (rect[0] as int).toDouble(),
-      (rect[1] as int).toDouble(),
-      (rect[2] as int).toDouble(),
-      (rect[3] as int).toDouble(),
+      (rect[0] as num).toDouble(),
+      (rect[1] as num).toDouble(),
+      (rect[2] as num).toDouble(),
+      (rect[3] as num).toDouble(),
     );
   }
 }
@@ -53,6 +57,7 @@ class KeyboardManager {
 
   static const _defaultSuppressDuration = Duration(milliseconds: 500);
 
+  /// Windows API 返回的是物理像素；这里保存物理像素，UI 使用时再除以 DPR。
   final bottomInset = ValueNotifier<double>(0);
 
   DateTime? _autoShowSuppressedUntil;
@@ -113,6 +118,15 @@ class KeyboardManager {
           generation == _intentGeneration) {
         await refreshKeyboardInset();
         _startKeyboardInsetPolling();
+        // 动态 padding 更新后，当前输入框需要再滚动一次才能避开新出现的键盘。
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          FocusManager.instance.primaryFocus?.context
+              ?.findRenderObject()
+              ?.showOnScreen(
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeOut,
+              );
+        });
       }
     }
 
@@ -163,16 +177,21 @@ class KeyboardManager {
       return;
     }
 
-    final appRect = await WindowsWindowController.instance.getWindowRect();
-    if (appRect == null) {
-      bottomInset.value = 0;
-      return;
-    }
+    try {
+      final appRect = await WindowsWindowController.instance.getWindowRect();
+      if (appRect == null) {
+        bottomInset.value = 0;
+        return;
+      }
 
-    bottomInset.value =
-        _WindowsTouchKeyboardApi.instance.dockedBottomInsetFor(appRect);
+      bottomInset.value =
+          _WindowsTouchKeyboardApi.instance.dockedBottomInsetFor(appRect);
+    } catch (_) {
+      bottomInset.value = 0;
+    }
   }
 
+  /// 触摸键盘可在“停靠/浮动”之间切换，所以显示期间需要持续刷新 inset。
   void _startKeyboardInsetPolling() {
     _keyboardInsetTimer?.cancel();
     _keyboardInsetTimer = Timer.periodic(
@@ -188,6 +207,7 @@ class KeyboardManager {
     );
   }
 
+  /// 键盘隐藏或焦点被清理时停止刷新，并把避让高度归零。
   void _stopKeyboardInsetPolling() {
     _keyboardInsetTimer?.cancel();
     _keyboardInsetTimer = null;
@@ -269,6 +289,7 @@ class _WindowsTouchKeyboardApi {
   _GetWindowRect? _getWindowRect;
   _IsWindowVisible? _isWindowVisible;
 
+  /// 关闭当前可见的触摸键盘窗口，比单纯杀 TabTip.exe 更贴近用户看到的窗口。
   bool closeTouchKeyboard() {
     if (!Platform.isWindows) return false;
 
@@ -299,6 +320,11 @@ class _WindowsTouchKeyboardApi {
     }
   }
 
+  /// 计算停靠在应用底部的触摸键盘遮挡高度。
+  ///
+  /// Windows 触摸键盘支持浮动小键盘。浮动模式不应给整个页面增加底部
+  /// padding，否则页面会无故上移；因此这里同时检查横向覆盖比例和底部
+  /// 对齐关系，只对“底部停靠的大键盘”返回正数。
   double dockedBottomInsetFor(Rect appRect) {
     final keyboardRect = getTouchKeyboardRect();
     if (keyboardRect == null) return 0;
@@ -309,20 +335,29 @@ class _WindowsTouchKeyboardApi {
     if (horizontalOverlap <= 0 || appRect.width <= 0) return 0;
 
     final widthRatio = horizontalOverlap / appRect.width;
-    final bottomGap = (appRect.bottom - keyboardRect.bottom).abs();
+    final allowedBottomGap = appRect.height * 0.12;
+    final reachesAppBottom =
+        keyboardRect.bottom >= appRect.bottom - allowedBottomGap;
     final overlapsBottom = keyboardRect.top < appRect.bottom &&
         keyboardRect.bottom > appRect.top &&
         keyboardRect.top >= appRect.top;
 
     // Floating/split keyboards are narrower or not docked to the bottom edge.
     // They should not reserve global bottom space.
-    if (widthRatio < 0.6 || bottomGap > 96 || !overlapsBottom) return 0;
+    if (widthRatio < 0.45 || !reachesAppBottom || !overlapsBottom) {
+      return 0;
+    }
 
     final inset = appRect.bottom - keyboardRect.top;
     if (inset <= 0) return 0;
     return inset + 20;
   }
 
+  /// 获取触摸键盘窗口的物理屏幕坐标。
+  ///
+  /// `IPTip_Main_Window` 是 Windows 触摸键盘常见顶层窗口类名。某些系统
+  /// 版本会让可见状态不稳定，因此即使 `IsWindowVisible` 返回 false，
+  /// 只要矩形尺寸有效，仍允许参与后续停靠判断。
   Rect? getTouchKeyboardRect() {
     if (!Platform.isWindows) return null;
 
@@ -337,7 +372,7 @@ class _WindowsTouchKeyboardApi {
           className,
           ffi.nullptr.cast<Utf16>(),
         );
-        if (keyboardWindow == 0 || isWindowVisible(keyboardWindow) == 0) {
+        if (keyboardWindow == 0) {
           return null;
         }
 
@@ -346,6 +381,13 @@ class _WindowsTouchKeyboardApi {
           if (getWindowRect(keyboardWindow, rectPointer) == 0) return null;
 
           final rect = rectPointer.ref;
+          final width = rect.right - rect.left;
+          final height = rect.bottom - rect.top;
+          if (width <= 0 || height <= 0) return null;
+          if (isWindowVisible(keyboardWindow) == 0 && height < 120) {
+            return null;
+          }
+
           return Rect.fromLTRB(
             rect.left.toDouble(),
             rect.top.toDouble(),
@@ -543,6 +585,8 @@ class _SmartTextFieldState extends State<SmartTextField> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
 
+      // Windows 触摸键盘是系统浮层，Flutter 不一定能通过 viewInsets 感知；
+      // 因此输入框获焦后主动滚动到可见区域，配合动态 bottom padding 避免遮挡。
       Scrollable.ensureVisible(
         context,
         alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
@@ -744,9 +788,12 @@ class _PosPageState extends State<PosPage> {
                       child: ValueListenableBuilder<double>(
                         valueListenable: KeyboardManager.instance.bottomInset,
                         builder: (context, keyboardInset, child) {
+                          // 弹框内同样使用动态避让；浮动小键盘不增加滚动底部空间。
+                          final logicalKeyboardInset = keyboardInset /
+                              MediaQuery.devicePixelRatioOf(context);
                           return SingleChildScrollView(
                             padding: EdgeInsets.only(
-                              bottom: _pagePadding + keyboardInset,
+                              bottom: _pagePadding + logicalKeyboardInset,
                             ),
                             child: child,
                           );
@@ -865,12 +912,16 @@ class _PosPageState extends State<PosPage> {
               ValueListenableBuilder<double>(
                 valueListenable: KeyboardManager.instance.bottomInset,
                 builder: (context, keyboardInset, child) {
+                  // Win32 矩形是物理像素，Flutter padding 使用逻辑像素。
+                  // 停靠大键盘时 keyboardInset > 0；浮动小键盘时保持 0。
+                  final logicalKeyboardInset =
+                      keyboardInset / MediaQuery.devicePixelRatioOf(context);
                   return SingleChildScrollView(
                     padding: EdgeInsets.fromLTRB(
                       _pagePadding,
                       _pagePadding,
                       _pagePadding,
-                      _pagePadding + keyboardInset,
+                      _pagePadding + logicalKeyboardInset,
                     ),
                     child: child,
                   );
