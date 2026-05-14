@@ -1,6 +1,7 @@
 #include "flutter_window.h"
 
 #include <optional>
+#include <windows.h>
 
 #include "flutter/generated_plugin_registrant.h"
 
@@ -25,6 +26,7 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  RegisterWindowMethodChannel();
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -68,4 +70,113 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   }
 
   return Win32Window::MessageHandler(hwnd, message, wparam, lparam);
+}
+
+void FlutterWindow::RegisterWindowMethodChannel() {
+  window_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), "pos/window",
+          &flutter::StandardMethodCodec::GetInstance());
+
+  window_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+                 result) {
+        if (call.method_name() == "enterFullscreen") {
+          // Trigger true Win32 borderless fullscreen from Flutter, not Dart UI only.
+          result->Success(flutter::EncodableValue(EnterFullscreen()));
+          return;
+        }
+        if (call.method_name() == "exitFullscreen") {
+          // Restore window style and placement saved before entering fullscreen.
+          result->Success(flutter::EncodableValue(ExitFullscreen()));
+          return;
+        }
+        if (call.method_name() == "isFullscreen") {
+          // Sync native fullscreen state on Dart init so UI reflects reality.
+          result->Success(flutter::EncodableValue(is_fullscreen_));
+          return;
+        }
+        if (call.method_name() == "getWindowRect") {
+          // Dart intersects this screen rect with the touch keyboard window rect
+          // to compute how much of the docked keyboard occludes the app.
+          RECT rect;
+          if (!GetWindowRect(GetHandle(), &rect)) {
+            result->Success(flutter::EncodableValue());
+            return;
+          }
+
+          flutter::EncodableList rect_value = {
+              flutter::EncodableValue(static_cast<int>(rect.left)),
+              flutter::EncodableValue(static_cast<int>(rect.top)),
+              flutter::EncodableValue(static_cast<int>(rect.right)),
+              flutter::EncodableValue(static_cast<int>(rect.bottom)),
+          };
+          result->Success(flutter::EncodableValue(rect_value));
+          return;
+        }
+
+        result->NotImplemented();
+      });
+}
+
+bool FlutterWindow::EnterFullscreen() {
+  if (is_fullscreen_) {
+    return true;
+  }
+
+  HWND window = GetHandle();
+  if (window == nullptr) {
+    return false;
+  }
+
+  previous_style_ = GetWindowLongPtr(window, GWL_STYLE);
+  previous_ex_style_ = GetWindowLongPtr(window, GWL_EXSTYLE);
+  previous_placement_.length = sizeof(WINDOWPLACEMENT);
+
+  // Save current placement; restore unchanged when leaving fullscreen.
+  MONITORINFO monitor_info = {sizeof(MONITORINFO)};
+  if (!GetWindowPlacement(window, &previous_placement_) ||
+      !GetMonitorInfo(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST),
+                      &monitor_info)) {
+    return false;
+  }
+
+  // Remove title bar and borders; fill the current monitor work area.
+  SetWindowLongPtr(window, GWL_STYLE,
+                   previous_style_ & ~static_cast<LONG_PTR>(WS_OVERLAPPEDWINDOW));
+  SetWindowLongPtr(window, GWL_EXSTYLE,
+                   previous_ex_style_ &
+                       ~static_cast<LONG_PTR>(WS_EX_DLGMODALFRAME |
+                                              WS_EX_WINDOWEDGE |
+                                              WS_EX_CLIENTEDGE |
+                                              WS_EX_STATICEDGE));
+
+  const RECT& monitor = monitor_info.rcMonitor;
+  SetWindowPos(window, HWND_TOP, monitor.left, monitor.top,
+               monitor.right - monitor.left, monitor.bottom - monitor.top,
+               SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+  is_fullscreen_ = true;
+  return true;
+}
+
+bool FlutterWindow::ExitFullscreen() {
+  if (!is_fullscreen_) {
+    return true;
+  }
+
+  HWND window = GetHandle();
+  if (window == nullptr) {
+    return false;
+  }
+
+  // Restore style, extended style, and placement from before fullscreen.
+  SetWindowLongPtr(window, GWL_STYLE, previous_style_);
+  SetWindowLongPtr(window, GWL_EXSTYLE, previous_ex_style_);
+  SetWindowPlacement(window, &previous_placement_);
+  SetWindowPos(window, nullptr, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER |
+                   SWP_FRAMECHANGED);
+  is_fullscreen_ = false;
+  return true;
 }
