@@ -83,23 +83,23 @@ void FlutterWindow::RegisterWindowMethodChannel() {
              std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
                  result) {
         if (call.method_name() == "enterFullscreen") {
-          // Flutter 侧按钮触发真正的 Win32 无边框全屏，而不是只改 Dart UI。
+          // Trigger true Win32 borderless fullscreen from Flutter, not Dart UI only.
           result->Success(flutter::EncodableValue(EnterFullscreen()));
           return;
         }
         if (call.method_name() == "exitFullscreen") {
-          // 退出全屏时恢复进入全屏前保存的窗口样式和位置。
+          // Restore window style and placement saved before entering fullscreen.
           result->Success(flutter::EncodableValue(ExitFullscreen()));
           return;
         }
         if (call.method_name() == "isFullscreen") {
-          // 让 Dart 初始化时同步原生窗口状态，保证按钮启用状态正确。
+          // Sync native fullscreen state on Dart init so UI reflects reality.
           result->Success(flutter::EncodableValue(is_fullscreen_));
           return;
         }
         if (call.method_name() == "getWindowRect") {
-          // Dart 侧会把这个物理屏幕坐标和触摸键盘窗口坐标相交，
-          // 用于计算停靠触摸键盘遮挡的真实高度。
+          // Dart intersects this screen rect with the touch keyboard window rect
+          // to compute how much of the docked keyboard occludes the app.
           RECT rect;
           if (!GetWindowRect(GetHandle(), &rect)) {
             result->Success(flutter::EncodableValue());
@@ -134,7 +134,7 @@ bool FlutterWindow::EnterFullscreen() {
   previous_ex_style_ = GetWindowLongPtr(window, GWL_EXSTYLE);
   previous_placement_.length = sizeof(WINDOWPLACEMENT);
 
-  // 保存当前窗口位置，退出全屏时原样恢复。
+  // Save current placement; restore unchanged when leaving fullscreen.
   MONITORINFO monitor_info = {sizeof(MONITORINFO)};
   if (!GetWindowPlacement(window, &previous_placement_) ||
       !GetMonitorInfo(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST),
@@ -142,7 +142,7 @@ bool FlutterWindow::EnterFullscreen() {
     return false;
   }
 
-  // 去掉标题栏和边框，覆盖当前显示器区域。
+  // Remove title bar and borders; fill the current monitor work area.
   SetWindowLongPtr(window, GWL_STYLE,
                    previous_style_ & ~static_cast<LONG_PTR>(WS_OVERLAPPEDWINDOW));
   SetWindowLongPtr(window, GWL_EXSTYLE,
@@ -170,7 +170,7 @@ bool FlutterWindow::ExitFullscreen() {
     return false;
   }
 
-  // 恢复全屏前的样式、扩展样式和窗口位置。
+  // Restore style, extended style, and placement from before fullscreen.
   SetWindowLongPtr(window, GWL_STYLE, previous_style_);
   SetWindowLongPtr(window, GWL_EXSTYLE, previous_ex_style_);
   SetWindowPlacement(window, &previous_placement_);
