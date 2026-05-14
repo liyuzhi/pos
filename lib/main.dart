@@ -403,11 +403,14 @@ class PosPage extends StatefulWidget {
 
 class _PosPageState extends State<PosPage> {
   static const _routeKeyboardSuppressDuration = Duration(milliseconds: 1200);
+  static const _externalInputCount = 12;
   static const _dialogInputCount = 12;
 
   final searchController = TextEditingController();
-  final testAController = TextEditingController();
-  final testBController = TextEditingController();
+  final externalInputControllers = List.generate(
+    _externalInputCount,
+    (_) => TextEditingController(),
+  );
   final _keyboardDismissFocusNode = FocusNode(
     debugLabel: 'keyboardDismissFocusNode',
     skipTraversal: true,
@@ -447,6 +450,12 @@ class _PosPageState extends State<PosPage> {
     setState(() {
       _isFullscreen = false;
     });
+  }
+
+  String _externalInputHint(int index) {
+    if (index == 0) return '测试输入框A';
+    if (index == 1) return '测试输入框B';
+    return '测试输入框${index + 1}';
   }
 
   /// 全局关闭焦点+键盘
@@ -644,8 +653,9 @@ class _PosPageState extends State<PosPage> {
   @override
   void dispose() {
     searchController.dispose();
-    testAController.dispose();
-    testBController.dispose();
+    for (final controller in externalInputControllers) {
+      controller.dispose();
+    }
     _keyboardDismissFocusNode.dispose();
     super.dispose();
   }
@@ -686,23 +696,18 @@ class _PosPageState extends State<PosPage> {
 
                     const SizedBox(height: 20),
 
-                    SmartTextField(
-                      controller: testAController,
-                      hintText: '测试输入框A',
-                      onChanged: (value) {
-                        debugPrint('测试输入框A: $value');
-                      },
-                    ),
-
-                    const SizedBox(height: 20),
-
-                    SmartTextField(
-                      controller: testBController,
-                      hintText: '测试输入框B',
-                      onChanged: (value) {
-                        debugPrint('测试输入框B: $value');
-                      },
-                    ),
+                    for (var index = 0;
+                        index < _externalInputCount;
+                        index++) ...[
+                      SmartTextField(
+                        controller: externalInputControllers[index],
+                        hintText: _externalInputHint(index),
+                        onChanged: (value) {
+                          debugPrint('${_externalInputHint(index)}: $value');
+                        },
+                      ),
+                      const SizedBox(height: 20),
+                    ],
 
                     const SizedBox(height: 20),
 

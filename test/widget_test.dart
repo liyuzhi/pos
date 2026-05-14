@@ -9,6 +9,7 @@ void main() {
     expect(find.text('Flutter Windows POS'), findsOneWidget);
     expect(find.text('测试输入框A'), findsOneWidget);
     expect(find.text('测试输入框B'), findsOneWidget);
+    expect(find.text('测试输入框12'), findsOneWidget);
     expect(find.text('打开Dialog'), findsOneWidget);
     expect(find.text('手动关闭键盘'), findsOneWidget);
     expect(find.text('点击这里不会再乱弹触摸键盘'), findsOneWidget);
