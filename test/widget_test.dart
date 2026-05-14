@@ -34,10 +34,16 @@ void main() {
   ) async {
     await tester.pumpWidget(const MyApp());
 
+    await tester.ensureVisible(find.text('测试输入框A'));
+    await tester.pump();
+
     await tester.tap(find.text('测试输入框A'));
     await tester.pump();
 
     expect(tester.testTextInput.isVisible, isTrue);
+
+    await tester.ensureVisible(find.text('测试输入框B'));
+    await tester.pump();
 
     await tester.tap(find.text('测试输入框B'));
     await tester.pump();
@@ -77,7 +83,10 @@ void main() {
     expect(find.text('测试弹框'), findsNothing);
     expect(tester.testTextInput.isVisible, isFalse);
 
-    await tester.tap(find.byType(SmartTextField).first);
+    await tester.ensureVisible(find.text('测试输入框A'));
+    await tester.pump();
+
+    await tester.tap(find.text('测试输入框A'));
     await tester.pump();
 
     expect(tester.testTextInput.isVisible, isTrue);
@@ -101,6 +110,9 @@ void main() {
 
     expect(find.text('测试弹框'), findsNothing);
     expect(tester.testTextInput.isVisible, isFalse);
+
+    await tester.ensureVisible(find.text('测试输入框A'));
+    await tester.pump();
 
     await tester.tap(find.text('测试输入框A'));
     await tester.pump();

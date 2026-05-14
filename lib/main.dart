@@ -403,6 +403,7 @@ class PosPage extends StatefulWidget {
 
 class _PosPageState extends State<PosPage> {
   static const _routeKeyboardSuppressDuration = Duration(milliseconds: 1200);
+  static const _keyboardAvoidanceBottomPadding = 380.0;
   static const _externalInputCount = 12;
   static const _dialogInputCount = 12;
 
@@ -683,7 +684,12 @@ class _PosPageState extends State<PosPage> {
                 child: const SizedBox.shrink(),
               ),
               SingleChildScrollView(
-                padding: const EdgeInsets.all(20),
+                padding: const EdgeInsets.fromLTRB(
+                  20,
+                  20,
+                  20,
+                  _keyboardAvoidanceBottomPadding,
+                ),
                 child: Column(
                   children: [
                     SmartTextField(
@@ -693,21 +699,6 @@ class _PosPageState extends State<PosPage> {
                         debugPrint('搜索内容: $value');
                       },
                     ),
-
-                    const SizedBox(height: 20),
-
-                    for (var index = 0;
-                        index < _externalInputCount;
-                        index++) ...[
-                      SmartTextField(
-                        controller: externalInputControllers[index],
-                        hintText: _externalInputHint(index),
-                        onChanged: (value) {
-                          debugPrint('${_externalInputHint(index)}: $value');
-                        },
-                      ),
-                      const SizedBox(height: 20),
-                    ],
 
                     const SizedBox(height: 20),
 
@@ -761,6 +752,22 @@ class _PosPageState extends State<PosPage> {
                       alignment: Alignment.center,
                       child: const Text('点击这里不会再乱弹触摸键盘'),
                     ),
+
+                    const SizedBox(height: 20),
+
+                    for (var index = 0;
+                        index < _externalInputCount;
+                        index++) ...[
+                      SmartTextField(
+                        controller: externalInputControllers[index],
+                        hintText: _externalInputHint(index),
+                        onChanged: (value) {
+                          debugPrint('${_externalInputHint(index)}: $value');
+                        },
+                      ),
+                      if (index != _externalInputCount - 1)
+                        const SizedBox(height: 20),
+                    ],
                   ],
                 ),
               ),
