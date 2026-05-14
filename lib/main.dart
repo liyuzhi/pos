@@ -9,6 +9,28 @@ void main() {
   runApp(const MyApp());
 }
 
+class WindowsWindowController {
+  WindowsWindowController._();
+
+  static final instance = WindowsWindowController._();
+  static const _channel = MethodChannel('pos/window');
+
+  Future<bool> enterFullscreen() async {
+    if (!Platform.isWindows) return false;
+    return await _channel.invokeMethod<bool>('enterFullscreen') ?? false;
+  }
+
+  Future<bool> exitFullscreen() async {
+    if (!Platform.isWindows) return false;
+    return await _channel.invokeMethod<bool>('exitFullscreen') ?? false;
+  }
+
+  Future<bool> isFullscreen() async {
+    if (!Platform.isWindows) return false;
+    return await _channel.invokeMethod<bool>('isFullscreen') ?? false;
+  }
+}
+
 class KeyboardManager {
   KeyboardManager._();
 
@@ -283,6 +305,8 @@ class _SmartTextFieldState extends State<SmartTextField> {
       await KeyboardManager.instance.showKeyboard();
       if (!mounted || generation != _focusGeneration) return;
 
+      _ensureVisible();
+
       if (!_focusNode.hasFocus) {
         await KeyboardManager.instance.hideKeyboard(clearFocus: false);
       }
@@ -318,6 +342,7 @@ class _SmartTextFieldState extends State<SmartTextField> {
       controller: widget.controller,
       focusNode: _focusNode,
       keyboardType: widget.touchKeyboardEnabled ? null : TextInputType.none,
+      scrollPadding: const EdgeInsets.fromLTRB(20, 20, 20, 360),
       decoration: InputDecoration(
         hintText: widget.hintText,
         border: const OutlineInputBorder(),
@@ -342,6 +367,19 @@ class _SmartTextFieldState extends State<SmartTextField> {
       onFieldSubmitted: widget.onSubmitted,
     );
   }
+
+  void _ensureVisible() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+
+      Scrollable.ensureVisible(
+        context,
+        alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+      );
+    });
+  }
 }
 
 class MyApp extends StatelessWidget {
@@ -365,6 +403,7 @@ class PosPage extends StatefulWidget {
 
 class _PosPageState extends State<PosPage> {
   static const _routeKeyboardSuppressDuration = Duration(milliseconds: 1200);
+  static const _dialogInputCount = 12;
 
   final searchController = TextEditingController();
   final testAController = TextEditingController();
@@ -373,6 +412,42 @@ class _PosPageState extends State<PosPage> {
     debugLabel: 'keyboardDismissFocusNode',
     skipTraversal: true,
   );
+  bool _isFullscreen = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFullscreenState();
+  }
+
+  Future<void> _loadFullscreenState() async {
+    final isFullscreen = await WindowsWindowController.instance.isFullscreen();
+    if (!mounted) return;
+
+    setState(() {
+      _isFullscreen = isFullscreen;
+    });
+  }
+
+  Future<void> _enterFullscreen() async {
+    await _hideAllKeyboard();
+    final success = await WindowsWindowController.instance.enterFullscreen();
+    if (!mounted || !success) return;
+
+    setState(() {
+      _isFullscreen = true;
+    });
+  }
+
+  Future<void> _exitFullscreen() async {
+    await _hideAllKeyboard();
+    final success = await WindowsWindowController.instance.exitFullscreen();
+    if (!mounted || !success) return;
+
+    setState(() {
+      _isFullscreen = false;
+    });
+  }
 
   /// 全局关闭焦点+键盘
   Future<void> _hideAllKeyboard({
@@ -401,22 +476,32 @@ class _PosPageState extends State<PosPage> {
 
     if (!mounted) return;
 
-    final dialogController = TextEditingController();
+    final dialogControllers = List.generate(
+      _dialogInputCount,
+      (_) => TextEditingController(),
+    );
     final dialogFocusNode = FocusNode(
       debugLabel: 'dialogKeyboardDismissFocusNode',
       skipTraversal: true,
     );
-    final dialogInputFocusNode = FocusNode(debugLabel: 'dialogInputFocusNode');
+    final dialogInputFocusNodes = List.generate(
+      _dialogInputCount,
+      (index) => FocusNode(debugLabel: 'dialogInputFocusNode$index'),
+    );
     var dialogInputHideStarted = false;
 
     Future<void> moveDialogFocusToSink({
       bool lockInputFocus = false,
     }) async {
       if (lockInputFocus) {
-        dialogInputFocusNode.canRequestFocus = false;
+        for (final focusNode in dialogInputFocusNodes) {
+          focusNode.canRequestFocus = false;
+        }
       }
 
-      dialogInputFocusNode.unfocus(disposition: UnfocusDisposition.scope);
+      for (final focusNode in dialogInputFocusNodes) {
+        focusNode.unfocus(disposition: UnfocusDisposition.scope);
+      }
       FocusManager.instance.primaryFocus?.unfocus(
         disposition: UnfocusDisposition.scope,
       );
@@ -449,65 +534,100 @@ class _PosPageState extends State<PosPage> {
         context: context,
         requestFocus: false,
         builder: (dialogContext) {
-          return AlertDialog(
-            title: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () => hideDialogKeyboard(),
-              child: const Text('测试弹框'),
-            ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Focus(
-                  focusNode: dialogFocusNode,
-                  child: const SizedBox.shrink(),
+          return Dialog(
+            child: SizedBox(
+              width: 500,
+              height: 500,
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => hideDialogKeyboard(),
+                      child: const Text(
+                        '测试弹框',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Focus(
+                      focusNode: dialogFocusNode,
+                      child: const SizedBox.shrink(),
+                    ),
+                    Expanded(
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.only(bottom: 360),
+                        child: Column(
+                          children: [
+                            for (var index = 0;
+                                index < _dialogInputCount;
+                                index++) ...[
+                              SmartTextField(
+                                controller: dialogControllers[index],
+                                focusNode: dialogInputFocusNodes[index],
+                                hintText: '弹框输入框${index + 1}',
+                                onFocusLost: () {
+                                  dialogInputHideStarted = true;
+                                },
+                                onChanged: (value) {
+                                  debugPrint('弹框输入框${index + 1}: $value');
+                                },
+                              ),
+                              if (index != _dialogInputCount - 1)
+                                const SizedBox(height: 12),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        onPressed: () async {
+                          await moveDialogFocusToSink(
+                            lockInputFocus: true,
+                          );
+
+                          if (dialogInputHideStarted) {
+                            await KeyboardManager.instance.waitForPendingHide();
+                          } else {
+                            await KeyboardManager.instance.hideKeyboard(
+                              clearFocus: false,
+                              suppressAutoShow: true,
+                              suppressDuration: _routeKeyboardSuppressDuration,
+                            );
+                          }
+
+                          KeyboardManager.instance.suppressAutoShow(
+                            _routeKeyboardSuppressDuration,
+                          );
+
+                          if (!dialogContext.mounted) return;
+                          Navigator.of(dialogContext).pop();
+                        },
+                        child: const Text('关闭'),
+                      ),
+                    ),
+                  ],
                 ),
-                SmartTextField(
-                  controller: dialogController,
-                  focusNode: dialogInputFocusNode,
-                  hintText: '搜索商品',
-                  onFocusLost: () {
-                    dialogInputHideStarted = true;
-                  },
-                  onChanged: (value) {
-                    debugPrint('搜索内容: $value');
-                  },
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () async {
-                  await moveDialogFocusToSink(
-                    lockInputFocus: true,
-                  );
-
-                  if (dialogInputHideStarted) {
-                    await KeyboardManager.instance.waitForPendingHide();
-                  } else {
-                    await KeyboardManager.instance.hideKeyboard(
-                      clearFocus: false,
-                      suppressAutoShow: true,
-                      suppressDuration: _routeKeyboardSuppressDuration,
-                    );
-                  }
-
-                  KeyboardManager.instance.suppressAutoShow(
-                    _routeKeyboardSuppressDuration,
-                  );
-
-                  if (!dialogContext.mounted) return;
-                  Navigator.of(dialogContext).pop();
-                },
-                child: const Text('关闭'),
               ),
-            ],
+            ),
           );
         },
       );
     } finally {
-      dialogController.dispose();
-      dialogInputFocusNode.dispose();
+      for (final controller in dialogControllers) {
+        controller.dispose();
+      }
+      for (final focusNode in dialogInputFocusNodes) {
+        focusNode.dispose();
+      }
       dialogFocusNode.dispose();
       if (mounted) {
         KeyboardManager.instance.suppressAutoShow(
@@ -541,7 +661,11 @@ class _PosPageState extends State<PosPage> {
         },
 
         child: Scaffold(
-          appBar: AppBar(title: const Text('Flutter Windows POS')),
+          appBar: AppBar(
+            title: _isFullscreen
+                ? const SizedBox.shrink()
+                : const Text('Flutter Windows POS'),
+          ),
           body: Stack(
             children: [
               Focus(
@@ -579,6 +703,31 @@ class _PosPageState extends State<PosPage> {
                         debugPrint('测试输入框B: $value');
                       },
                     ),
+
+                    const SizedBox(height: 20),
+
+                    if (Platform.isWindows) ...[
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed:
+                                  _isFullscreen ? null : _enterFullscreen,
+                              child: const Text('全屏显示'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed:
+                                  _isFullscreen ? _exitFullscreen : null,
+                              child: const Text('退出全屏'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+                    ],
 
                     const SizedBox(height: 20),
 
