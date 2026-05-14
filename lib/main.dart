@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ffi' as ffi;
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:ffi/ffi.dart';
 import 'package:flutter/material.dart';
@@ -251,6 +252,18 @@ enum _KeyboardIntent { show, hide }
 typedef _FindWindowWNative =
     ffi.IntPtr Function(ffi.Pointer<Utf16>, ffi.Pointer<Utf16>);
 typedef _FindWindowW = int Function(ffi.Pointer<Utf16>, ffi.Pointer<Utf16>);
+typedef _FindWindowExWNative = ffi.IntPtr Function(
+  ffi.IntPtr hWndParent,
+  ffi.IntPtr hWndChildAfter,
+  ffi.Pointer<Utf16> lpszClass,
+  ffi.Pointer<Utf16> lpszWindow,
+);
+typedef _FindWindowExW = int Function(
+  int hWndParent,
+  int hWndChildAfter,
+  ffi.Pointer<Utf16> lpszClass,
+  ffi.Pointer<Utf16> lpszWindow,
+);
 typedef _PostMessageWNative =
     ffi.Int32 Function(ffi.IntPtr, ffi.Uint32, ffi.IntPtr, ffi.IntPtr);
 typedef _PostMessageW = int Function(int, int, int, int);
@@ -285,6 +298,7 @@ class _WindowsTouchKeyboardApi {
 
   ffi.DynamicLibrary? _user32;
   _FindWindowW? _findWindowW;
+  _FindWindowExW? _findWindowExW;
   _PostMessageW? _postMessageW;
   _GetWindowRect? _getWindowRect;
   _IsWindowVisible? _isWindowVisible;
@@ -294,27 +308,17 @@ class _WindowsTouchKeyboardApi {
     if (!Platform.isWindows) return false;
 
     try {
-      final findWindowW = _findWindowW ??= _lookupFindWindowW();
       final postMessageW = _postMessageW ??= _lookupPostMessageW();
-      final className = _touchKeyboardWindowClass.toNativeUtf16();
+      final keyboardWindow = _resolveTouchKeyboardHwnd();
+      if (keyboardWindow == 0) return false;
 
-      try {
-        final keyboardWindow = findWindowW(
-          className,
-          ffi.nullptr.cast<Utf16>(),
-        );
-        if (keyboardWindow == 0) return false;
-
-        return postMessageW(
-              keyboardWindow,
-              _wmSysCommand,
-              _scClose,
-              0,
-            ) !=
-            0;
-      } finally {
-        malloc.free(className);
-      }
+      return postMessageW(
+            keyboardWindow,
+            _wmSysCommand,
+            _scClose,
+            0,
+          ) !=
+          0;
     } catch (_) {
       return false;
     }
@@ -338,18 +342,25 @@ class _WindowsTouchKeyboardApi {
     final allowedBottomGap = appRect.height * 0.12;
     final reachesAppBottom =
         keyboardRect.bottom >= appRect.bottom - allowedBottomGap;
-    final overlapsBottom = keyboardRect.top < appRect.bottom &&
-        keyboardRect.bottom > appRect.top &&
-        keyboardRect.top >= appRect.top;
 
-    // Floating/split keyboards are narrower or not docked to the bottom edge.
-    // They should not reserve global bottom space.
-    if (widthRatio < 0.45 || !reachesAppBottom || !overlapsBottom) {
+    // 与窗口在竖直方向有交集即可；若仍要求 keyboard.top >= app.top，
+    // 当键盘 HWND 矩形向上包含建议栏等非绘制区域时会误判为未遮挡底部。
+    final overlapsVertically = keyboardRect.top < appRect.bottom &&
+        keyboardRect.bottom > appRect.top;
+
+    // 浮动/分体窄键盘不预留整页底部；阈值略放宽以适配竖屏或窄窗口。
+    if (widthRatio < 0.35 || !reachesAppBottom || !overlapsVertically) {
       return 0;
     }
 
-    final inset = appRect.bottom - keyboardRect.top;
+    final overlapTop = math.max(appRect.top, keyboardRect.top);
+    final overlapBottom = math.min(appRect.bottom, keyboardRect.bottom);
+    var inset = overlapBottom - overlapTop;
     if (inset <= 0) return 0;
+
+    // 用相交高度而不是 app.bottom - keyboard.top，避免矩形异常偏高时
+    // 预留高度超过实际遮挡区域。
+    inset = math.min(inset, appRect.height);
     return inset + 20;
   }
 
@@ -362,46 +373,125 @@ class _WindowsTouchKeyboardApi {
     if (!Platform.isWindows) return null;
 
     try {
-      final findWindowW = _findWindowW ??= _lookupFindWindowW();
       final isWindowVisible = _isWindowVisible ??= _lookupIsWindowVisible();
       final getWindowRect = _getWindowRect ??= _lookupGetWindowRect();
-      final className = _touchKeyboardWindowClass.toNativeUtf16();
+      final keyboardWindow = _resolveTouchKeyboardHwnd();
+      if (keyboardWindow == 0) {
+        return null;
+      }
 
+      final rectPointer = malloc<_NativeRect>();
       try {
-        final keyboardWindow = findWindowW(
-          className,
-          ffi.nullptr.cast<Utf16>(),
-        );
-        if (keyboardWindow == 0) {
+        if (getWindowRect(keyboardWindow, rectPointer) == 0) return null;
+
+        final rect = rectPointer.ref;
+        final width = rect.right - rect.left;
+        final height = rect.bottom - rect.top;
+        if (width <= 0 || height <= 0) return null;
+        if (isWindowVisible(keyboardWindow) == 0 && height < 120) {
           return null;
         }
 
-        final rectPointer = malloc<_NativeRect>();
-        try {
-          if (getWindowRect(keyboardWindow, rectPointer) == 0) return null;
-
-          final rect = rectPointer.ref;
-          final width = rect.right - rect.left;
-          final height = rect.bottom - rect.top;
-          if (width <= 0 || height <= 0) return null;
-          if (isWindowVisible(keyboardWindow) == 0 && height < 120) {
-            return null;
-          }
-
-          return Rect.fromLTRB(
-            rect.left.toDouble(),
-            rect.top.toDouble(),
-            rect.right.toDouble(),
-            rect.bottom.toDouble(),
-          );
-        } finally {
-          malloc.free(rectPointer);
-        }
+        return Rect.fromLTRB(
+          rect.left.toDouble(),
+          rect.top.toDouble(),
+          rect.right.toDouble(),
+          rect.bottom.toDouble(),
+        );
       } finally {
-        malloc.free(className);
+        malloc.free(rectPointer);
       }
     } catch (_) {
       return null;
+    }
+  }
+
+  /// 解析当前应对位的触摸键盘 HWND。
+  ///
+  /// `FindWindowW(IPTip_Main_Window)` 只会命中 Z 序中的第一个实例，常见为
+  /// 隐藏壳窗口；新系统还存在 “Microsoft Text Input Application” 标题宿主。
+  /// 这里枚举同类顶层窗口并按面积/可见性择优，再回退标题与单实例查找。
+  int _resolveTouchKeyboardHwnd() {
+    final findWindowExW = _findWindowExW ??= _lookupFindWindowExW();
+    final findWindowW = _findWindowW ??= _lookupFindWindowW();
+    final getWindowRect = _getWindowRect ??= _lookupGetWindowRect();
+    final isWindowVisible = _isWindowVisible ??= _lookupIsWindowVisible();
+
+    final className = _touchKeyboardWindowClass.toNativeUtf16();
+    try {
+      var bestHwnd = 0;
+      var bestRank = -1;
+      var after = 0;
+      while (true) {
+        final hwnd = findWindowExW(
+          0,
+          after,
+          className,
+          ffi.nullptr.cast<Utf16>(),
+        );
+        if (hwnd == 0) break;
+        after = hwnd;
+        final rank = _touchKeyboardCandidateRank(
+          hwnd,
+          getWindowRect,
+          isWindowVisible,
+        );
+        if (rank > bestRank) {
+          bestRank = rank;
+          bestHwnd = hwnd;
+        }
+      }
+      if (bestHwnd != 0) {
+        return bestHwnd;
+      }
+    } finally {
+      malloc.free(className);
+    }
+
+    final title = 'Microsoft Text Input Application'.toNativeUtf16();
+    try {
+      final hwnd = findWindowW(
+        ffi.nullptr.cast<Utf16>(),
+        title,
+      );
+      if (hwnd != 0) {
+        return hwnd;
+      }
+    } finally {
+      malloc.free(title);
+    }
+
+    final classOnly = _touchKeyboardWindowClass.toNativeUtf16();
+    try {
+      return findWindowW(
+        classOnly,
+        ffi.nullptr.cast<Utf16>(),
+      );
+    } finally {
+      malloc.free(classOnly);
+    }
+  }
+
+  int _touchKeyboardCandidateRank(
+    int hwnd,
+    _GetWindowRect getWindowRect,
+    _IsWindowVisible isWindowVisible,
+  ) {
+    final rectPointer = malloc<_NativeRect>();
+    try {
+      if (getWindowRect(hwnd, rectPointer) == 0) return -1;
+      final r = rectPointer.ref;
+      final width = r.right - r.left;
+      final height = r.bottom - r.top;
+      if (width <= 0 || height <= 0) return -1;
+      if (width < 80 || height < 40) return -1;
+      if (isWindowVisible(hwnd) == 0 && height < 120) return -1;
+
+      final area = width * height;
+      final visibleBoost = isWindowVisible(hwnd) != 0 ? (1 << 28) : 0;
+      return visibleBoost + area;
+    } finally {
+      malloc.free(rectPointer);
     }
   }
 
@@ -414,6 +504,13 @@ class _WindowsTouchKeyboardApi {
   _FindWindowW _lookupFindWindowW() {
     return _loadUser32().lookupFunction<_FindWindowWNative, _FindWindowW>(
       'FindWindowW',
+    );
+  }
+
+  _FindWindowExW _lookupFindWindowExW() {
+    return _loadUser32()
+        .lookupFunction<_FindWindowExWNative, _FindWindowExW>(
+      'FindWindowExW',
     );
   }
 
